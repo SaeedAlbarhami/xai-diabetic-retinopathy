@@ -1,3 +1,15 @@
+"""Data loading and preprocessing module.
+
+Handles the APTOS 2019 benchmark split (seed 1988 -> 2,800 train / 312 val /
+550 test), the four-stage fundus preprocessing pipeline (resize -> CLAHE ->
+Ben-Graham -> circle crop -> ImageNet normalisation), backbone construction
+(EfficientNet-B4, ResNet-50, ViT-B/16), and the data-overview utilities that
+produce the class-distribution figures used in the report.
+
+Main entry points used by the notebook:
+    load_project_config()           -- YAML loader for configs/base.yaml
+    notebook_prepare_data_overview()-- build manifests + split/class figures
+"""
 from __future__ import annotations
 
 import copy

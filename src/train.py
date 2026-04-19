@@ -1,3 +1,14 @@
+"""Training and evaluation module.
+
+Fine-tunes the EfficientNet-B4 backbone on APTOS 2019 with focal loss, fits
+post-hoc temperature scaling on the validation split, and produces all
+predictive-performance and calibration artefacts consumed by the report
+(headline metrics, per-class metrics, confusion matrix, calibration bins).
+
+Main entry points used by the notebook:
+    notebook_run_training()         -- fine-tune or reuse the cached checkpoint
+    notebook_run_core_evaluation()  -- inference on the 550-image test split
+"""
 from __future__ import annotations
 
 import copy

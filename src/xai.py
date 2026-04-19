@@ -1,3 +1,16 @@
+"""XAI audit module.
+
+Explainability pipeline for the APTOS 2019 DR grading project: Grad-CAM and
+SHAP DeepExplainer generation, per-sample metrics (border ratio, retina ratio,
+faithfulness deltas, AOPC), the retinal-disc attribution-mask correction, and
+all aggregate tables used by the report (method stats, pairwise McNemar,
+continuous paired tests, per-class breakdown).
+
+Main entry points used by the notebook:
+    notebook_run_xai()                    -- full audit on the class-balanced subset
+    notebook_load_xai_committee_summary() -- loads result tables for display
+    notebook_run_single_case_report()     -- single-image Grad-CAM + SHAP demo
+"""
 from __future__ import annotations
 
 import copy

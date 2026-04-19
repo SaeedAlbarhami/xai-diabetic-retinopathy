@@ -1,18 +1,15 @@
 # Explainable Diabetic Retinopathy Classification Pipeline
 
-An end-to-end reproducible pipeline for five-class diabetic retinopathy (DR) severity grading on the APTOS 2019 dataset, with post-hoc explainability via Grad-CAM and SHAP and a research-standard XAI audit. Built as the ITPG708 final project.
+An end-to-end reproducible pipeline for five-class diabetic retinopathy (DR) severity grading on the APTOS 2019 dataset, with post-hoc explainability via Grad-CAM and SHAP. Built as the ITPG708 final project.
 
-**At a glance:**
+This README is a developer guide: how to set it up, how to run it, where the outputs land, and how to extend it. Experimental findings and statistical results live in [the project report](src/report/XAI_Final-ProjectReport.pdf) — this file only contains what you need to operate the code.
 
-- **Model**: EfficientNet-B4 fine-tuned from ImageNet weights with focal loss (γ=2.0) + temperature scaling for post-hoc calibration.
-- **Test metrics (N=550, seed 1988)**: accuracy 82.2%, macro-F1 0.711, QWK 0.896, ECE 0.044 after calibration.
-- **Explanation-quality comparison** on an audit subset of 120 class-balanced test targets (24 per DR grade, chosen to keep perturbation-based evaluation computationally tractable while preserving full class coverage); predictive metrics above use the full 550-image test set. Attribution maps are post-processed with the retinal-disc mask correction described in Section 6.2 of the report.
-  - **Primary continuous comparison** shows more favourable values for Grad-CAM on all six metrics (paired Wilcoxon p < 10⁻³ each): border 0.206 vs 0.234 (dz=0.32), retina 0.816 vs 0.791 (dz=0.27), AOPC 0.287 vs 0.163 (dz=0.58), Δ_k20 0.328 vs 0.187 (dz=0.54).
-  - **Mask ablation** (see [rq_xai_mask_ablation CSV](artifacts/reports/tables/rq_xai_mask_ablation_seed1988_test.csv)): on the raw (pre-mask) maps, SHAP has the lower border ratio (the Grad-CAM bilinear-upsample artefact inflates corner mass); after the symmetric mask, the localisation result is Grad-CAM-favoured. SHAP numbers are bit-identical across conditions (DeepExplainer attributes zero to zero-valued corner pixels), so the correction is Grad-CAM-specific.
-  - **Per-class complementarity**: SHAP has more favourable values on No_DR (76.9% vs 53.8%) and Severe (38.1% vs 14.3%); Grad-CAM has more favourable values on Mild/Moderate/Proliferative. Both methods should be reported together in clinical workflows.
-  - **Secondary descriptive threshold summary** under the operational rule (border ≤ 0.25 AND Δ_k20 > 0.10): Grad-CAM 55.8% vs SHAP 39.2%, McNemar exact p = 0.012. This is a descriptive companion only; the threshold gap narrows to ~2 pp at a relaxed 0.30 border cut-off, which is why the continuous analysis is treated as primary.
+**Stack at a glance:**
 
-The primary entry point is the notebook [notebooks/project_demo.ipynb](notebooks/project_demo.ipynb). Every stage is idempotent: once a checkpoint, predictions file, or XAI table exists, subsequent runs reuse it unless you explicitly force a rebuild.
+- Backbone: EfficientNet-B4 (ImageNet-pretrained) fine-tuned with focal loss, plus temperature scaling post-training.
+- Explainers: Grad-CAM (captum `LayerGradCam`) and SHAP (`DeepExplainer`), with a retinal-disc attribution mask applied before any XAI metric is computed.
+- Single entry point: [notebooks/project_demo.ipynb](notebooks/project_demo.ipynb).
+- Every stage is idempotent — once a checkpoint, predictions file, or XAI table exists, subsequent runs reuse it unless you force a rebuild.
 
 ---
 
@@ -35,9 +32,17 @@ ITPG708Project/
 │   ├── xai.py                       # Grad-CAM, SHAP, audit (border ratio,
 │   │                                # faithfulness, McNemar, Wilcoxon), notebook
 │   │                                # helpers
+│   └── report/                      # LaTeX report + assets consumed by Overleaf
+│       ├── XAI_Final-ProjectReport.tex
+│       └── assets/                  # figure02..figure13 PNGs referenced by the TEX
 ├── tools/
-│   ├── export_project_demo_assets.py     # exports figure1..figure10 to assets/
-│   └── export_preprocessing_steps.py     # produces figure12 preprocessing example
+│   ├── export_project_demo_assets.py    # legacy demo export (figure1..figure10)
+│   ├── export_preprocessing_steps.py    # produces figure12_preprocessing_example
+│   ├── gen_class_distribution_overall.py  # produces figure13_class_distribution_overall
+│   ├── refresh_report_assets.py         # regenerates figure08/09/10/11 in src/report/assets
+│   ├── build_ablation_table.py          # rebuilds mask-ablation + per-class CSVs
+│   ├── run_xai_full.py                  # shell-side driver for the XAI audit
+│   └── smoke_xai_n4.py                  # N=4 smoke test for XAI changes
 ├── artifacts/
 │   ├── checkpoints/                 # trained .pt + calibration .json
 │   ├── predictions/                 # per-split prediction CSVs
@@ -69,11 +74,11 @@ This flat structure means the codebase can be opened, navigated, and edited with
 
 ### 1. Python environment
 
-Developed and tested against Python 3.11 in a conda env named `ceng709`. From a fresh env:
+Developed and tested against Python 3.11 in a conda env named `itpg708`. From a fresh env:
 
 ```bash
-conda create -n ceng709 python=3.11
-conda activate ceng709
+conda create -n itpg708 python=3.11
+conda activate itpg708
 pip install -r requirements.txt
 ```
 
@@ -149,9 +154,7 @@ The "Run Configuration" cell is the single control panel. All other cells read f
 | 4. Data Preparation | generates / reuses train/val/test manifests | ~5–10s | [artifacts/manifests/](artifacts/manifests/) |
 | 5. Model Fine-Tuning | reuses checkpoint if config signature matches; else trains from scratch | ~5s reused / ~60min fresh | [artifacts/checkpoints/](artifacts/checkpoints/) + calibration JSON |
 | 6. Core Evaluation | inference on the eval split, confusion matrix, per-class metrics, headline table, calibration | ~1–2min on MPS | [artifacts/predictions/](artifacts/predictions/), [artifacts/reports/tables/](artifacts/reports/tables/) |
-| **7. Explainability Analysis** | **Grad-CAM + SHAP audit at N=120 (24 per class)** | **~2 hours on MPS** | `rq_xai_method_stats`, `rq_xai_pairwise`, `rq_xai_continuous`, `rq1_gradcam`, `rq2_shap`, per-sample Grad-CAM / SHAP overlay PNGs |
-| 7. Summary display | reads the audit CSVs and renders a descriptive pass-rate table + bar chart + continuous-analysis table | <5s | — |
-| 7. Advanced audit (gated) | correctness split, class-wise pass rate, discordant cases | <5s | — |
+| **7. Explainability Analysis** | Grad-CAM + SHAP audit at N=120 (24 per class), retinal-disc mask applied before metrics, then renders the continuous + threshold comparison tables. Gated advanced breakdown shown when `SHOW_ADVANCED_XAI_AUDIT=True`. | ~13–16 min on MPS at `shap_background_size=16` | `rq_xai_method_stats`, `rq_xai_pairwise`, `rq_xai_continuous`, `rq_xai_mask_ablation`, `rq_xai_per_class`, `rq1_gradcam`, `rq2_shap`, per-sample Grad-CAM / SHAP overlay PNGs |
 | 8. Visual Review | Grad-CAM + SHAP demo grids across target classes | ~3–5min | `gradcam_demo_grid.png`, `shap_demo_grid.png` |
 | 9. Single-Case Demo | detailed XAI panel for one fundus image | ~30s | `artifacts/reports/figures/single/` |
 
@@ -192,6 +195,18 @@ A 5-panel worked example is generated by [tools/export_preprocessing_steps.py](t
 
 ---
 
+## XAI pipeline
+
+Both explainers run against the same preprocessed input and the same predicted class, then their maps go through one symmetric post-processing step before any metric is computed:
+
+1. **Grad-CAM** via captum `LayerGradCam`, evaluated at EfficientNet-B4 layers 2 / 3 / 4. Per-target layer selection uses a joint criterion `aopc × (1 − border_ratio)` (see [gradcam_layer_selection CSV](artifacts/reports/tables/gradcam_layer_selection_seed1988_test.csv)).
+2. **SHAP DeepExplainer** on raw pixels, against a class-balanced background of `shap_background_size` training images sampled deterministically with `random_state=stratify_seed`.
+3. **Retinal-disc attribution mask.** Both maps are multiplied element-wise by a circular mask with radius `attribution_mask_radius_ratio × min(H, W)` = `0.50 × 380 = 190 px` before border ratio, retina ratio, faithfulness deltas, and AOPC are computed. The mask corrects a bilinear-upsample artefact in Grad-CAM (attribution leaking onto the dark circle-crop corners); it has no numerical effect on SHAP because DeepExplainer already attributes zero to zero-valued pixels. Both masked and raw values are written to the per-sample CSVs (`border_ratio` / `border_ratio_raw` etc.) so the effect is auditable.
+
+All three settings above are driven from [configs/base.yaml](configs/base.yaml) — see the `xai.*` keys.
+
+---
+
 ## Current checked-in configuration
 
 Committed [configs/base.yaml](configs/base.yaml) uses:
@@ -207,21 +222,16 @@ Committed [configs/base.yaml](configs/base.yaml) uses:
 
 ## Current checked-in run
 
-- **Seed**: 1988
-- **Run ID**: `dr_efficientnet_b4_aptos2019_85-15-v10_seed1988_20260316T0607_9eee8e`
-- **Training duration**: 58.40 minutes (one-time)
-- **Best validation macro-F1**: 0.6801
-- **Test accuracy**: 0.8218
-- **Test macro precision**: 0.7104
-- **Test macro recall**: 0.7408
-- **Test macro F1**: 0.7105
-- **Test QWK**: 0.8958
-- **Calibration temperature**: 0.7435
-- **ECE before / after calibration**: 0.0790 → 0.0440
-- **XAI audit N**: 120 (24 per class, all 5 grades covered)
-- **XAI audit device**: MPS (no CPU fallback triggered)
+Provenance only — helps you confirm you're working against the expected checkpoint. For experimental results, see the [project report](src/report/XAI_Final-ProjectReport.pdf).
 
-Detailed per-class and confusion tables are under [artifacts/reports/tables/](artifacts/reports/tables/).
+- **Seed:** 1988
+- **Run ID:** `dr_efficientnet_b4_aptos2019_85-15-v10_seed1988_20260316T0607_9eee8e`
+- **Training duration:** 58.40 min (one-time)
+- **Best validation macro-F1:** 0.6801
+- **Calibration temperature:** 0.7435
+- **XAI audit N:** 120 (24 per class), device MPS, no CPU fallback
+
+All per-class tables, confusion matrix, and XAI CSVs are under [artifacts/reports/tables/](artifacts/reports/tables/).
 
 ---
 
@@ -265,21 +275,26 @@ This project aims for bit-for-bit determinism where possible. The guarantees are
 
 ## Exporting figures
 
-After a successful run:
+There are two separate asset folders, for two different consumers.
+
+**1. `src/report/assets/` — figures referenced by the LaTeX report.** Each file is named `figureNN_description.png` (e.g. `figure02_training_history.png` ... `figure13_class_distribution_overall.png`) and is referenced by `\includegraphics{...}` in [src/report/XAI_Final-ProjectReport.tex](src/report/XAI_Final-ProjectReport.tex). Most of these are stable; the four that drift per XAI run are refreshed by:
+
+```bash
+python tools/refresh_report_assets.py
+```
+
+This regenerates `figure08_xai_explanation_pass_rate.png`, copies the latest `figure09_gradcam_demo_grid.png` / `figure10_shap_demo_grid.png`, and recomposes `figure11_single_case_combined.png`. The preprocessing example (`figure12`) and overall class distribution (`figure13`) are one-shot generators:
+
+```bash
+python tools/export_preprocessing_steps.py         # figure12
+python tools/gen_class_distribution_overall.py     # figure13
+```
+
+**2. `assets/` — legacy flat export for sharing a demo zip.** Uses `figure1.png` / `figure2.png` ... `figure10.png` (no leading zeros, different numbering). This is not referenced by the report — use it only if you want to hand someone a quick figure bundle.
 
 ```bash
 python tools/export_project_demo_assets.py --output-dir assets --zip-path assets.zip
 ```
-
-This writes `figure1.png` through `figure10.png` to `assets/` (plus a `figure_manifest.csv` that maps each one to its title and source). Note: the tool uses `figure1` / `figure10` naming without leading zeros.
-
-Separately, generate the preprocessing worked-example figure:
-
-```bash
-python tools/export_preprocessing_steps.py
-```
-
-This writes `figure12_preprocessing_example.png`.
 
 ---
 
