@@ -1,0 +1,142 @@
+project:
+  name: dr_xai
+  seed_list: [1988, 42, 2026]
+
+paths:
+  dataset_root: dataset
+
+  aptos_root: dataset/aptos2019
+  aptos_train_csv: dataset/aptos2019/train_1.csv
+  aptos_valid_csv: dataset/aptos2019/valid.csv
+  aptos_test_csv: dataset/aptos2019/test.csv
+  aptos_train_image_dir: dataset/aptos2019/train_images
+  aptos_valid_image_dir: dataset/aptos2019/val_images
+  aptos_test_image_dir: dataset/aptos2019/test_images
+  roboflow_root: dataset/roboflow
+  roboflow_train_dir: dataset/roboflow/train
+  roboflow_valid_dir: dataset/roboflow/valid
+  roboflow_train_labels_csv: dataset/roboflow/train/_classes.csv
+  roboflow_valid_labels_csv: dataset/roboflow/valid/_classes.csv
+
+  artifacts_root: artifacts
+  manifests_dir: artifacts/manifests
+  checkpoints_dir: artifacts/checkpoints
+  predictions_dir: artifacts/predictions
+  logs_dir: artifacts/logs
+
+  reports_root: artifacts/reports
+  figures_dir: artifacts/reports/figures
+  tables_dir: artifacts/reports/tables
+
+data:
+  protocol: benchmark
+  source: aptos_only
+  image_size: 380
+  num_classes: 5
+  label_order: [No_DR, Mild, Moderate, Severe, Proliferate_DR]
+  split_seed_list: [1988, 42, 2026]
+  profile_test_ratio: 0.15
+  profile_val_ratio_within_train: 0.10
+  train_ratio: 0.75
+  test_ratio: 0.15
+  val_ratio: 0.10
+  stratify_seed: 1988
+
+preprocessing:
+  enabled: true
+  circle_crop_ratio: 1.00
+  clahe_clip_limit: 2.0
+  clahe_tile_grid: 8
+  gaussian_sigma: 10.0
+  ben_graham_weight: 4.0
+  ben_graham_bias: 128.0
+  norm_mean: [0.485, 0.456, 0.406]
+  norm_std: [0.229, 0.224, 0.225]
+
+augmentation:
+  profile_style: true
+  profile_target_per_class: 0
+  profile_horizontal_flip: 0.5
+  profile_vertical_flip: 0.0
+  profile_rotation_degrees: 20
+  profile_translate: 0.03
+  profile_scale_min: 0.95
+  profile_scale_max: 1.05
+  profile_shear_degrees: 8
+  profile_brightness: 0.15
+  profile_contrast: 0.15
+
+  train_horizontal_flip: 0.5
+  train_vertical_flip: 0.0
+  train_rotation_degrees: 20
+  train_affine_translate: 0.03
+  train_affine_scale_min: 0.95
+  train_affine_scale_max: 1.05
+  color_jitter_brightness: 0.15
+  color_jitter_contrast: 0.15
+  color_jitter_saturation: 0.0
+  color_jitter_hue: 0.0
+
+training:
+  device: auto
+  backbone: efficientnet_b4
+  optimizer_name: adamw
+  epochs: 15
+  batch_size: 32
+  num_workers: 1
+  log_every_batches: 10
+  lr: 0.00007
+  weight_decay: 0.0001
+  grad_accum_steps: 1
+  use_differential_lr: false
+  backbone_lr_multiplier: 0.05
+  layer4_lr_multiplier: 0.1
+  head_lr_multiplier: 10.0
+  early_stopping_patience: 3
+  label_smoothing: 0.03
+  loss_name: focal
+  use_focal_loss: true
+  focal_gamma: 2.0
+  use_ordinal_loss: false
+  ordinal_loss_weight: 0.0
+  dropout: 0.20
+  use_weighted_sampler: false
+  profile_class_balanced_sampling: false
+  use_class_weights: true
+  use_scheduler: true
+  scheduler_name: cosine_annealing
+  scheduler_factor: 0.5
+  scheduler_patience: 8
+  scheduler_min_lr: 0.0000001
+  scheduler_min_lr_ratio: 0.01
+  use_pretrained: true
+
+calibration:
+  n_bins: 10
+  temperature_max_iter: 50
+  interpolate_empty_bins: false
+
+xai:
+  device: auto
+  log_every_samples: 16
+  gradcam_layer: layer4
+  gradcam_layers_eval: [layer2, layer3, layer4]
+  shap_mode: subset
+  shap_max_samples: 120
+  shap_background_size: 16
+  attribution_mask_radius_ratio: 0.50
+  enforce_consistent_targets: true
+  shap_score_mode: positive
+  balance_targets_by_class: true
+  balance_fill_from_all: true
+  target_balance_class_col: true_class
+  pass_border_ratio_max: 0.25
+  pass_faith_delta_min: 0.10
+  figure_dpi: 600
+  faithfulness_k_list: [0.10, 0.20, 0.30]
+  stats_bootstrap_iters: 1000
+  stats_bootstrap_seed: 1988
+  max_targets: 120
+
+evaluation:
+  high_conf_threshold: 0.00

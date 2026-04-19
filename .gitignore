@@ -1,0 +1,68 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# macOS / Google Drive
+.DS_Store
+Icon?
+Icon\r
+._*
+
+# Editors / IDEs
+.vscode/
+.idea/
+*.swp
+*~
+
+# Jupyter
+.ipynb_checkpoints/
+*.nbconvert.ipynb
+.venv/
+venv/
+
+# LaTeX build artefacts (keep the .tex source; exclude compiled/intermediate files)
+src/report/*.aux
+src/report/*.log
+src/report/*.out
+src/report/*.toc
+src/report/*.nav
+src/report/*.snm
+src/report/*.synctex.gz
+src/report/*.fls
+src/report/*.fdb_latexmk
+src/report/*.bbl
+src/report/*.blg
+src/report/*.pdf
+src/report/assets/
+src/report/
+
+# Dataset
+dataset/**/train_images/
+dataset/**/val_images/
+dataset/**/valid_images/
+dataset/**/test_images/
+dataset/**/*.png
+dataset/**/*.jpg
+dataset/**/*.jpeg
+dataset/**/*.tif
+dataset/**/*.tiff
+
+# Generated outputs
+artifacts/
+assets/
+
+# Local env files
+.env
+.envrc
+
+# Build outputs
+assets.zip
