@@ -283,7 +283,7 @@ There are two separate asset folders, for two different consumers.
 python tools/refresh_report_assets.py
 ```
 
-This regenerates `figure08_xai_explanation_pass_rate.png`, copies the latest `figure09_gradcam_demo_grid.png` / `figure10_shap_demo_grid.png`, and recomposes `figure11_single_case_combined.png`. The preprocessing example (`figure12`) and overall class distribution (`figure13`) are one-shot generators:
+This regenerates `figure08_xai_explanation_pass_rate.png`, copies the latest `figure09_gradcam_demo_grid.png` / `figure10_shap_demo_grid.png`, and refreshes the single-case pair `figure11a_gradcam_class_grid.png` / `figure11b_shap_class_grid.png` (equal-width, symmetric assets used as two subfigures in the report). The preprocessing example (`figure12`) and overall class distribution (`figure13`) are one-shot generators:
 
 ```bash
 python tools/export_preprocessing_steps.py         # figure12

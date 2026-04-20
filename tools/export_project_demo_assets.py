@@ -188,13 +188,13 @@ def export_assets(
         records.append(FigureRecord(8, "SHAP Demo Grid", fig8, "notebook fallback"))
 
     fig9 = output_dir / "figure9.png"
-    single_gradcam = _latest_matching_file(single_dir, "*_gradcam_panel.png")
+    single_gradcam = _latest_matching_file(single_dir, "*_gradcam_grid.png")
     if single_gradcam is not None:
         _copy_image(single_gradcam, fig9)
-        records.append(FigureRecord(9, "Single-Case Grad-CAM Panel", fig9, "copied"))
+        records.append(FigureRecord(9, "Single-Case Grad-CAM Grid", fig9, "copied"))
     else:
         _extract_notebook_png(notebook_path, cell_index=21, image_index_within_cell=0, out_path=fig9)
-        records.append(FigureRecord(9, "Single-Case Grad-CAM Panel", fig9, "notebook fallback"))
+        records.append(FigureRecord(9, "Single-Case Grad-CAM Grid", fig9, "notebook fallback"))
 
     fig10 = output_dir / "figure10.png"
     single_shap = _latest_matching_file(single_dir, "*_shap_grid.png")

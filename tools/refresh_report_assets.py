@@ -9,9 +9,11 @@ Regenerates or copies the four figures that can drift between runs:
   ``artifacts/reports/figures/gradcam_demo_grid.png``.
 * ``figure10_shap_demo_grid.png`` — copied from the latest
   ``artifacts/reports/figures/shap_demo_grid.png``.
-* ``figure11_single_case_combined.png`` — composed from the latest
-  single-case Grad-CAM panel + SHAP grid under
-  ``artifacts/reports/figures/single/``.
+* ``figure11a_gradcam_class_grid.png`` and ``figure11b_shap_class_grid.png``
+  — copied from the latest single-case class-conditional Grad-CAM grid and
+  SHAP per-class grid under ``artifacts/reports/figures/single/``. Emitted as
+  two separate assets at the same target width so the report can stack them
+  as two symmetric subfigures without rescaling.
 """
 from __future__ import annotations
 
@@ -78,31 +80,46 @@ def refresh_demo_grids() -> None:
 
 
 def refresh_figure11() -> None:
-    """Compose the single-case combined figure: Grad-CAM panel + SHAP grid stacked.
+    """Emit the single-case figure as two separate, equal-width assets.
 
-    The SHAP grid is downscaled to the Grad-CAM panel's width to keep the
-    composed PNG at a reasonable file size (~2 MB) while preserving visual
-    layout.
+    Writes ``figure11a_gradcam_class_grid.png`` and ``figure11b_shap_class_grid.png``
+    to ``src/report/assets/``, resized so both PNGs share the same width. Each
+    input PNG already renders a (1 x (1+num_classes)) grid from the shared
+    renderer, so equal width yields equal per-cell pixel budget.
+
+    The old combined asset (``figure11_single_case_combined.png``) is removed
+    if present so the report cannot accidentally pick up a stale stacked
+    version.
     """
-    gradcam_path = _latest("*_gradcam_panel.png")
+    gradcam_path = _latest("*_gradcam_grid.png")
     shap_path = _latest("*_shap_grid.png")
 
     top = Image.open(gradcam_path).convert("RGB")
     bottom = Image.open(shap_path).convert("RGB")
 
-    target_w = top.width
+    target_w = max(top.width, bottom.width)
+    if top.width != target_w:
+        new_h = int(round(top.height * (target_w / top.width)))
+        top = top.resize((target_w, new_h), Image.LANCZOS)
     if bottom.width != target_w:
         new_h = int(round(bottom.height * (target_w / bottom.width)))
         bottom = bottom.resize((target_w, new_h), Image.LANCZOS)
 
-    canvas = Image.new("RGB", (target_w, top.height + bottom.height), "white")
-    canvas.paste(top, (0, 0))
-    canvas.paste(bottom, (0, top.height))
+    out_gradcam = ASSETS / "figure11a_gradcam_class_grid.png"
+    out_shap = ASSETS / "figure11b_shap_class_grid.png"
+    top.save(out_gradcam, format="PNG", optimize=True)
+    bottom.save(out_shap, format="PNG", optimize=True)
+    print(
+        f"wrote {out_gradcam} ({out_gradcam.stat().st_size / (1024 * 1024):.2f} MB, from {gradcam_path.name})"
+    )
+    print(
+        f"wrote {out_shap} ({out_shap.stat().st_size / (1024 * 1024):.2f} MB, from {shap_path.name})"
+    )
 
-    out_path = ASSETS / "figure11_single_case_combined.png"
-    canvas.save(out_path, format="PNG", optimize=True)
-    size_mb = out_path.stat().st_size / (1024 * 1024)
-    print(f"wrote {out_path} ({size_mb:.2f} MB, from {gradcam_path.name} + {shap_path.name})")
+    stale_combined = ASSETS / "figure11_single_case_combined.png"
+    if stale_combined.exists():
+        stale_combined.unlink()
+        print(f"removed stale {stale_combined}")
 
 
 def main() -> int:

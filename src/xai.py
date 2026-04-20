@@ -2401,33 +2401,25 @@ def run_single_case_demo(
     for _stale in single_dir.glob(f"{img_path.stem}_*.png"):
         _stale.unlink()
 
-    # Build one compact Grad-CAM panel: [Input | layer2 | layer3 | layer4].
-    gradcam_panel_path = single_dir / f"{img_path.stem}_gradcam_panel.png"
-    raw = Image.open(img_path).convert("RGB")
-    model_view = _apply_fundus_preprocessing(
-        raw,
-        image_size=int(_model_image_size(conf)),
-        preprocessing_cfg=conf.get("preprocessing", {}),
+    # Build a class-conditional Grad-CAM grid at the config's primary layer
+    # so Grad-CAM and SHAP share an identical layout: [Original | per-class...].
+    out_dpi = int(shap_dpi if shap_dpi is not None else fig_dpi)
+    primary_gradcam_layer = str(conf.get("xai", {}).get("gradcam_layer", gradcam_layer_order[0] if gradcam_layer_order else "layer4"))
+    gradcam_grid_path = single_dir / f"{img_path.stem}_gradcam_grid.png"
+    fig_g = plot_gradcam_class_grid(
+        cfg_path=conf,
+        seed=seed,
+        image_paths=[str(img_path)],
+        gradcam_layer=primary_gradcam_layer,
+        save_path=gradcam_grid_path,
+        dpi=out_dpi,
+        true_classes=[int(true_class)] if true_class is not None else None,
+        show_correctness_border=bool(true_class is not None),
+        panel_size=shap_panel_size,
     )
-    panels: list[tuple[str, np.ndarray]] = [("Input (Model View)", np.array(model_view))]
-    for layer in gradcam_layer_order:
-        artifact = str((single_result.get("gradcam_artifacts") or {}).get(layer, ""))
-        if artifact and Path(artifact).exists():
-            panels.append((f"Grad-CAM {layer}", np.asarray(plt.imread(artifact))))
-
-    fig_g, axes = plt.subplots(1, len(panels), figsize=(4.0 * len(panels), 4.0), facecolor="white")
-    if len(panels) == 1:
-        axes = [axes]
-    for ax, (title, image_arr) in zip(axes, panels):
-        ax.imshow(image_arr)
-        ax.set_title(title, fontsize=9)
-        ax.axis("off")
-    fig_g.tight_layout()
-    fig_g.savefig(gradcam_panel_path, dpi=fig_dpi, bbox_inches="tight", facecolor="white")
     plt.close(fig_g)
 
     bg_size = int(max(1, shap_background_size if shap_background_size is not None else conf.get("xai", {}).get("shap_background_size", 64)))
-    out_dpi = int(shap_dpi if shap_dpi is not None else fig_dpi)
     shap_grid_path = single_dir / f"{img_path.stem}_shap_grid.png"
     fig_s = plot_shap_grid(
         cfg_path=conf,
@@ -2456,7 +2448,8 @@ def run_single_case_demo(
         "pred_label": pred_label,
         "confidence": float(single_result.get("confidence", float("nan"))),
         "prob_table": prob_table,
-        "gradcam_panel_path": str(gradcam_panel_path),
+        "gradcam_grid_path": str(gradcam_grid_path),
+        "gradcam_layer": primary_gradcam_layer,
         "shap_grid_path": str(shap_grid_path),
         "single_result": single_result,
         "xai_warnings": list(single_result.get("xai_warnings") or []),
@@ -2665,6 +2658,124 @@ def plot_gradcam_grid(
     return fig
 
 
+def _plot_attribution_grid(
+    rows_data: list[dict[str, Any]],
+    num_classes: int,
+    label_order: list[str],
+    cmap: Any,
+    norm: Any,
+    colorbar_label: str,
+    panel_size: tuple[float, float],
+    bg_cmap: str = "gray",
+    bg_alpha: float = 0.35,
+    fg_alpha: float = 0.85,
+    show_correctness_border: bool = False,
+    save_path: str | Path | None = None,
+    dpi: int = 180,
+) -> plt.Figure:
+    """Render a shared (nrows x (1+num_classes)) attribution grid.
+
+    Each row in ``rows_data`` must carry: ``image_pil``, ``pred_class``,
+    ``confidence``, ``class_maps`` (length ``num_classes``), and optionally
+    ``true_class``. Used by both :func:`plot_shap_grid` and
+    :func:`plot_gradcam_class_grid` so the two methods render identically.
+    """
+    nrows = len(rows_data)
+    ncols = 1 + int(num_classes)
+    panel_w = max(1.5, float(panel_size[0]))
+    panel_h = max(2.0, float(panel_size[1]))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(panel_w * ncols, panel_h * nrows), facecolor="white")
+    axes = np.array(axes).reshape(nrows, ncols)
+
+    im = None
+    row_border_specs: list[tuple[int, str]] = []
+    for r, row in enumerate(rows_data):
+        image_pil = row["image_pil"]
+        pred_class = int(row["pred_class"])
+        true_class_raw = row.get("true_class")
+        true_class = int(true_class_raw) if true_class_raw is not None else None
+        confidence = float(row.get("confidence", float("nan")))
+        class_maps = row["class_maps"]
+
+        axes[r, 0].imshow(np.array(image_pil.convert("L")), cmap=str(bg_cmap))
+        axes[r, 0].axis("off")
+        axes[r, 0].set_title("Original", fontsize=8)
+        if true_class is None:
+            caption = f"pred={label_order[pred_class]} conf={confidence:.3f}"
+        else:
+            true_label = label_order[int(true_class)] if 0 <= int(true_class) < len(label_order) else str(true_class)
+            pred_label = label_order[int(pred_class)] if 0 <= int(pred_class) < len(label_order) else str(pred_class)
+            is_correct = int(pred_class) == int(true_class)
+            verdict = "correct" if is_correct else "wrong"
+            caption = f"true={true_label} pred={pred_label} ({verdict}) conf={confidence:.3f}"
+            if show_correctness_border:
+                row_border_specs.append((r, "#27ae60" if is_correct else "#e74c3c"))
+        axes[r, 0].text(
+            0.5,
+            -0.08,
+            caption,
+            transform=axes[r, 0].transAxes,
+            ha="center",
+            va="top",
+            fontsize=7,
+        )
+
+        for cls_idx, smap in enumerate(class_maps):
+            ax = axes[r, cls_idx + 1]
+            bg = np.array(
+                image_pil.convert("L").resize((smap.shape[1], smap.shape[0]), Image.Resampling.BILINEAR)
+            )
+            ax.imshow(bg, cmap=str(bg_cmap), alpha=float(bg_alpha), vmin=0, vmax=255, interpolation="bilinear")
+            im = ax.imshow(smap, cmap=cmap, norm=norm, alpha=float(fg_alpha), interpolation="nearest")
+            ax.axis("off")
+            score = 1.0 if cls_idx == pred_class else 0.0
+            ax.set_title(f"{score:.1f}", fontsize=8, color="#e74c3c" if cls_idx == pred_class else "#333")
+
+    if im is not None:
+        cbar_ax = fig.add_axes([0.15, 0.02, 0.70, 0.02])
+        cb = fig.colorbar(plt.cm.ScalarMappable(cmap=cmap, norm=norm), cax=cbar_ax, orientation="horizontal")
+        cb.set_label(str(colorbar_label), fontsize=8)
+        cb.ax.tick_params(labelsize=7)
+
+    bottom_margin = 0.09 if im is not None else 0.05
+    fig.subplots_adjust(left=0.02, right=0.99, top=0.97, bottom=bottom_margin, wspace=0.02, hspace=0.32)
+    if show_correctness_border and row_border_specs:
+        for row_idx, border_color in row_border_specs:
+            p_first = axes[row_idx, 0].get_position()
+            p_last = axes[row_idx, ncols - 1].get_position()
+            x0 = min(p_first.x0, p_last.x0)
+            y0 = min(p_first.y0, p_last.y0)
+            x1 = max(p_first.x1, p_last.x1)
+            y1 = max(p_first.y1, p_last.y1)
+            pad = 0.0025
+            rect = mpatches.Rectangle(
+                (x0 - pad, y0 - pad),
+                (x1 - x0) + 2 * pad,
+                (y1 - y0) + 2 * pad,
+                fill=False,
+                edgecolor=border_color,
+                linewidth=1,
+                transform=fig.transFigure,
+                clip_on=False,
+                zorder=20,
+            )
+            fig.add_artist(rect)
+        fig.text(
+            0.5,
+            0.005,
+            "Green border = correct prediction, Red border = wrong prediction.",
+            ha="center",
+            fontsize=8,
+            style="italic",
+            color="#444",
+        )
+    if save_path:
+        out = Path(save_path)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(out, dpi=int(dpi), bbox_inches="tight", facecolor="white")
+    return fig
+
+
 def plot_shap_grid(
     cfg_path: str | Path | dict[str, Any],
     seed: int,
@@ -2798,109 +2909,134 @@ def plot_shap_grid(
     norm = TwoSlopeNorm(vmin=-vmax, vcenter=0.0, vmax=vmax)
     cmap = plt.get_cmap(str(shap_cmap))
 
-    nrows = len(rows_data)
-    ncols = 1 + num_classes
     if panel_size is None:
-        panel_w, panel_h = 2.2, 2.8
+        effective_panel_size = (2.2, 2.8)
     else:
-        panel_w = float(panel_size[0])
-        panel_h = float(panel_size[1])
-        panel_w = max(1.5, panel_w)
-        panel_h = max(2.0, panel_h)
-    fig, axes = plt.subplots(nrows, ncols, figsize=(panel_w * ncols, panel_h * nrows), facecolor="white")
-    axes = np.array(axes).reshape(nrows, ncols)
+        effective_panel_size = (float(panel_size[0]), float(panel_size[1]))
 
-    im = None
-    row_border_specs: list[tuple[int, str]] = []
-    for r, row in enumerate(rows_data):
-        image_pil = row["image_pil"]
-        pred_class = int(row["pred_class"])
-        true_class_raw = row.get("true_class")
-        true_class = int(true_class_raw) if true_class_raw is not None else None
-        confidence = float(row["confidence"])
-        class_maps = row["class_maps"]
-
-        axes[r, 0].imshow(np.array(image_pil.convert("L")), cmap=str(bg_cmap))
-        axes[r, 0].axis("off")
-        axes[r, 0].set_title("Original", fontsize=8)
-        if true_class is None:
-            caption = f"pred={label_order[pred_class]} conf={confidence:.3f}"
-        else:
-            true_label = label_order[int(true_class)] if 0 <= int(true_class) < len(label_order) else str(true_class)
-            pred_label = label_order[int(pred_class)] if 0 <= int(pred_class) < len(label_order) else str(pred_class)
-            is_correct = int(pred_class) == int(true_class)
-            verdict = "correct" if is_correct else "wrong"
-            caption = f"true={true_label} pred={pred_label} ({verdict}) conf={confidence:.3f}"
-            if show_correctness_border:
-                row_border_specs.append((r, "#27ae60" if is_correct else "#e74c3c"))
-        axes[r, 0].text(
-            0.5,
-            -0.08,
-            caption,
-            transform=axes[r, 0].transAxes,
-            ha="center",
-            va="top",
-            fontsize=7,
-        )
-
-        for cls_idx, smap in enumerate(class_maps):
-            ax = axes[r, cls_idx + 1]
-            bg = np.array(
-                image_pil.convert("L").resize((smap.shape[1], smap.shape[0]), Image.Resampling.BILINEAR)
-            )
-            ax.imshow(bg, cmap=str(bg_cmap), alpha=float(bg_alpha), vmin=0, vmax=255, interpolation="bilinear")
-            im = ax.imshow(smap, cmap=cmap, norm=norm, alpha=float(shap_alpha), interpolation="nearest")
-            ax.axis("off")
-            score = 1.0 if cls_idx == pred_class else 0.0
-            ax.set_title(f"{score:.1f}", fontsize=8, color="#e74c3c" if cls_idx == pred_class else "#333")
-
-    if im is not None:
-        cbar_ax = fig.add_axes([0.15, 0.02, 0.70, 0.02])
-        cb = fig.colorbar(plt.cm.ScalarMappable(cmap=cmap, norm=norm), cax=cbar_ax, orientation="horizontal")
-        cb.set_label("SHAP value", fontsize=8)
-        cb.ax.tick_params(labelsize=7)
-
-    # Avoid tight_layout() here because we manually add a colorbar axes.
-    # tight_layout triggers a noisy warning and can produce unstable geometry.
-    bottom_margin = 0.09 if im is not None else 0.05
-    fig.subplots_adjust(left=0.02, right=0.99, top=0.97, bottom=bottom_margin, wspace=0.02, hspace=0.32)
-    if show_correctness_border and row_border_specs:
-        for row_idx, border_color in row_border_specs:
-            p_first = axes[row_idx, 0].get_position()
-            p_last = axes[row_idx, ncols - 1].get_position()
-            x0 = min(p_first.x0, p_last.x0)
-            y0 = min(p_first.y0, p_last.y0)
-            x1 = max(p_first.x1, p_last.x1)
-            y1 = max(p_first.y1, p_last.y1)
-            pad = 0.0025
-            rect = mpatches.Rectangle(
-                (x0 - pad, y0 - pad),
-                (x1 - x0) + 2 * pad,
-                (y1 - y0) + 2 * pad,
-                fill=False,
-                edgecolor=border_color,
-                linewidth=1,
-                transform=fig.transFigure,
-                clip_on=False,
-                zorder=20,
-            )
-            fig.add_artist(rect)
-        fig.text(
-            0.5,
-            0.005,
-            "Green border = correct prediction, Red border = wrong prediction.",
-            ha="center",
-            fontsize=8,
-            style="italic",
-            color="#444",
-        )
-    if save_path:
-        out = Path(save_path)
-        out.parent.mkdir(parents=True, exist_ok=True)
-        fig.savefig(out, dpi=out_dpi, bbox_inches="tight", facecolor="white")
+    fig = _plot_attribution_grid(
+        rows_data=rows_data,
+        num_classes=num_classes,
+        label_order=label_order,
+        cmap=cmap,
+        norm=norm,
+        colorbar_label="SHAP value",
+        panel_size=effective_panel_size,
+        bg_cmap=bg_cmap,
+        bg_alpha=bg_alpha,
+        fg_alpha=shap_alpha,
+        show_correctness_border=show_correctness_border,
+        save_path=save_path,
+        dpi=out_dpi,
+    )
     if shap_fallback_used:
         print(f"SHAP fallback used: attempted_device={device}, final_device={shap_final_device}, primary_error={shap_primary_error}")
     return fig
+
+
+def plot_gradcam_class_grid(
+    cfg_path: str | Path | dict[str, Any],
+    seed: int,
+    image_paths: list[str],
+    gradcam_layer: str | None = None,
+    cmap_name: str = "inferno",
+    bg_cmap: str = "gray",
+    bg_alpha: float = 0.35,
+    fg_alpha: float = 0.85,
+    save_path: str | Path | None = None,
+    dpi: int | None = None,
+    true_classes: list[int] | None = None,
+    show_correctness_border: bool = False,
+    panel_size: tuple[float, float] | None = None,
+) -> plt.Figure:
+    """
+    Plot class-conditional Grad-CAM per class for each input image.
+    Layout: one row per image, columns [original, class0, class1, ...].
+    Shares the renderer used by :func:`plot_shap_grid` so both methods appear
+    at identical scale and styling.
+    """
+    if _CAPTUM_IMPORT_ERROR is not None:
+        raise RuntimeError(f"captum import failed: {_CAPTUM_IMPORT_ERROR}")
+    if len(image_paths) == 0:
+        raise ValueError("image_paths must not be empty")
+    if true_classes is not None and len(true_classes) != len(image_paths):
+        raise ValueError(
+            f"true_classes length ({len(true_classes)}) must match image_paths length ({len(image_paths)})."
+        )
+
+    from matplotlib.colors import Normalize
+
+    conf = _cfg(cfg_path)
+    device = _resolve_xai_device(conf)
+    image_size = _model_image_size(conf)
+    num_classes = int(conf["data"]["num_classes"])
+    label_order = list(conf["data"]["label_order"])
+    backbone = _backbone_name(conf)
+    out_dpi = int(dpi if dpi is not None else conf.get("xai", {}).get("figure_dpi", 180))
+    layer_name = str(gradcam_layer or conf.get("xai", {}).get("gradcam_layer", "layer4")).strip().lower()
+
+    ckpt_path, run_id = _resolve_checkpoint_and_run_id(conf, seed=seed, checkpoint=None, require_existing=True)
+    model = _load_model(conf, seed, device, checkpoint=ckpt_path)
+    temperature = _temperature_for_run(conf, run_id)
+
+    rows_data: list[dict[str, Any]] = []
+    for img_idx, image_path in enumerate(image_paths):
+        image_pil, tensor = _load_image_for_inference(
+            image_path,
+            image_size=image_size,
+            preprocessing_cfg=conf.get("preprocessing", {}),
+        )
+        tensor = tensor.to(device)
+        pred_class, confidence, _ = _predict_one_with_temperature(model, tensor, device, temperature)
+
+        class_maps: list[np.ndarray] = []
+        out_h, out_w = int(tensor.shape[-2]), int(tensor.shape[-1])
+        for cls_idx in range(num_classes):
+            heat = _gradcam_heatmap_for_display(
+                model=model,
+                input_tensor=tensor,
+                class_id=int(cls_idx),
+                layer_name=layer_name,
+                output_size=(out_w, out_h),
+                device=device,
+                backbone_hint=backbone,
+            )
+            heat = heat * _attribution_retina_mask(heat.shape, conf)
+            class_maps.append(heat.astype(np.float32))
+
+        rows_data.append(
+            {
+                "image_pil": image_pil,
+                "pred_class": int(pred_class),
+                "true_class": int(true_classes[img_idx]) if true_classes is not None else None,
+                "confidence": float(confidence),
+                "class_maps": class_maps,
+            }
+        )
+
+    cmap = plt.get_cmap(str(cmap_name))
+    norm = Normalize(vmin=0.0, vmax=1.0)
+
+    if panel_size is None:
+        effective_panel_size = (2.2, 2.8)
+    else:
+        effective_panel_size = (float(panel_size[0]), float(panel_size[1]))
+
+    return _plot_attribution_grid(
+        rows_data=rows_data,
+        num_classes=num_classes,
+        label_order=label_order,
+        cmap=cmap,
+        norm=norm,
+        colorbar_label=f"Grad-CAM intensity ({layer_name})",
+        panel_size=effective_panel_size,
+        bg_cmap=bg_cmap,
+        bg_alpha=bg_alpha,
+        fg_alpha=fg_alpha,
+        show_correctness_border=show_correctness_border,
+        save_path=save_path,
+        dpi=out_dpi,
+    )
 
 
 def notebook_run_xai(
@@ -3497,8 +3633,8 @@ def notebook_run_single_case_report(
 
     figure_sections = [
         {
-            "title": "### Grad-CAM (Input + Requested Layers)",
-            "path": str(single_demo["gradcam_panel_path"]),
+            "title": f"### Grad-CAM (Per-Class Grid, layer={single_demo.get('gradcam_layer', 'layer4')})",
+            "path": str(single_demo["gradcam_grid_path"]),
         },
         {
             "title": "### SHAP (Per-Class Grid)",
