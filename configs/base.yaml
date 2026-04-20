@@ -132,7 +132,7 @@ xai:
   target_balance_class_col: true_class
   pass_border_ratio_max: 0.25
   pass_faith_delta_min: 0.10
-  figure_dpi: 600
+  figure_dpi: 300
   faithfulness_k_list: [0.10, 0.20, 0.30]
   stats_bootstrap_iters: 1000
   stats_bootstrap_seed: 1988
