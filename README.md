@@ -201,7 +201,7 @@ Both explainers run against the same preprocessed input and the same predicted c
 
 1. **Grad-CAM** via captum `LayerGradCam`, evaluated at EfficientNet-B4 layers 2 / 3 / 4. Per-target layer selection uses a joint criterion `aopc × (1 − border_ratio)` (see [gradcam_layer_selection CSV](artifacts/reports/tables/gradcam_layer_selection_seed1988_test.csv)).
 2. **SHAP DeepExplainer** on raw pixels, against a class-balanced background of `shap_background_size` training images sampled deterministically with `random_state=stratify_seed`.
-3. **Retinal-disc attribution mask.** Both maps are multiplied element-wise by a circular mask with radius `attribution_mask_radius_ratio × min(H, W)` = `0.50 × 380 = 190 px` before border ratio, retina ratio, faithfulness deltas, and AOPC are computed. The mask corrects a bilinear-upsample artefact in Grad-CAM (attribution leaking onto the dark circle-crop corners); it has no numerical effect on SHAP because DeepExplainer already attributes zero to zero-valued pixels. Both masked and raw values are written to the per-sample CSVs (`border_ratio` / `border_ratio_raw` etc.) so the effect is auditable.
+3. **Retinal-disc attribution mask.** Both maps are multiplied element-wise by a circular mask with radius `attribution_mask_radius_ratio × min(H, W)` = `0.50 × 380 = 190 px` before border ratio, retina ratio, faithfulness deltas, and AOPC are computed. The mask corrects a bilinear-upsample artefact in Grad-CAM (attribution leaking onto the dark circle-crop corners); it has no numerical effect on SHAP because the corner region is constant across preprocessed inputs and the SHAP background, so DeepSHAP contributes zero there. Both masked and raw values are written to the per-sample CSVs (`border_ratio` / `border_ratio_raw` etc.) so the effect is auditable.
 
 All three settings above are driven from [configs/base.yaml](configs/base.yaml) — see the `xai.*` keys.
 
@@ -247,7 +247,7 @@ After Section 7 completes, the following CSVs land in [artifacts/reports/tables/
 | `rq_xai_pass_by_class_seed1988_test.csv` | Per-class pass-rate breakdown |
 | `rq_xai_pass_by_correctness_seed1988_test.csv` | Pass rate split by correct vs wrong predictions |
 | `rq1_gradcam_seed1988_test.csv` | Per-sample Grad-CAM scores (selected layer × 120 targets; `border_ratio`/`retina_ratio` are masked, `border_ratio_raw`/`retina_ratio_raw` are pre-mask — see `rq_xai_mask_ablation_*.csv`) |
-| `rq2_shap_seed1988_test.csv` | Per-sample SHAP scores (120 rows; raw and masked columns are bit-identical since DeepExplainer attributes zero to zero-valued corner pixels) |
+| `rq2_shap_seed1988_test.csv` | Per-sample SHAP scores (120 rows; raw and masked columns are bit-identical since the corner region is constant across preprocessed inputs and the SHAP background) |
 | `xai_targets_seed1988_test.csv` | The 120 audit targets with sample_id, true class, predicted class, confidence, image path |
 | `xai_target_coverage_seed1988_test.csv` | Per-target flag for gradcam_done / shap_done (used for consistency checking) |
 | `gradcam_layer_selection_seed1988_test.csv` | Per-layer composite_score = mean_aopc_delta × (1 − mean_border_ratio), alongside the individual means and row count. Winner is selected by the composite. |
