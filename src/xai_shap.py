@@ -11,6 +11,7 @@ the single-case report figure and by the audit's visual review.
 from __future__ import annotations
 
 import gc
+import types
 import warnings
 from pathlib import Path
 from typing import Any
@@ -50,7 +51,7 @@ from src.xai_common import (
     _resolve_xai_device,
     _temperature_for_run,
 )
-from src.xai_viz import _plot_attribution_grid
+from src.xai_viz import _normalize_map, _plot_attribution_grid
 
 
 def _is_shap_inplace_view_error(exc: Exception) -> bool:

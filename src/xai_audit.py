@@ -60,6 +60,8 @@ from src.data import (
     _save_json,
     _set_seed,
     _table_path,
+    _use_legacy_aliases,
+    _write_alias_copy,
     load_project_config,
     prepare_data_manifests,
 )
@@ -68,10 +70,14 @@ from src.train import (
     _LogitWrapper,
     _calibration_path_for_run_id,
     _gradcam_status_log_path,
+    _legacy_gradcam_status_alias_path,
+    _legacy_shap_status_alias_path,
     _load_model,
     _predictions_path_for_run_id,
     _resolve_checkpoint_and_run_id,
+    _save_latest_run_record,
     _shap_status_log_path,
+    run_split_inference,
 )
 from src.xai_common import (
     _predict_one_with_temperature,

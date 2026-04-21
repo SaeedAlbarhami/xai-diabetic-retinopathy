@@ -20,11 +20,19 @@ from src.data import (
     _load_json,
     _manifest_path,
     _table_path,
+    prepare_data_manifests,
 )
-from src.train import _predictions_path_for_run_id
+from src.train import (
+    _gradcam_status_log_path,
+    _load_latest_run_record,
+    _predictions_path_for_run_id,
+    _shap_status_log_path,
+    build_validation_calibration_table,
+)
 from src.xai_audit import (
     _format_continuous_bottom_line,
     _format_continuous_table_for_display,
+    _parse_gradcam_layers,
     _xai_pass_rule_thresholds,
     run_xai_analysis,
 )
