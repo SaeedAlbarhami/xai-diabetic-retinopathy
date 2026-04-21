@@ -29,9 +29,28 @@ ITPG708Project/
 │   ├── train.py                     # DRClassifier, focal loss, training loop,
 │   │                                # temperature calibration, evaluation,
 │   │                                # checkpoint/run plumbing
-│   ├── xai.py                       # Grad-CAM, SHAP, audit (border ratio,
-│   │                                # faithfulness, McNemar, Wilcoxon), notebook
-│   │                                # helpers
+│   ├── xai.py                       # public facade — re-exports every
+│   │                                # name its callers used pre-refactor;
+│   │                                # implementation is split across
+│   │                                # xai_*.py siblings below
+│   ├── xai_viz.py                   # L1 leaf: pure rendering (overlays,
+│   │                                # attribution-grid renderer)
+│   ├── xai_stats.py                 # L1 leaf: paired Wilcoxon + t-test +
+│   │                                # McNemar + bootstrap CI
+│   ├── xai_metrics.py               # L1 leaf: retinal-disc mask, border
+│   │                                # ring, mass ratios, multi-k faithfulness
+│   ├── xai_common.py                # L1 leaf: device resolver, predict-
+│   │                                # with-temperature, calibration lookup
+│   ├── xai_gradcam.py               # L2 compute: Grad-CAM + layer resolver
+│   │                                # + 4-case demo grid + class grid
+│   ├── xai_shap.py                  # L2 compute: SHAP + MBConv/Bottleneck
+│   │                                # compat patches + per-class SHAP grid
+│   ├── xai_audit.py                 # L3 orchestrator: run_xai_analysis
+│   │                                # + _build_xai_* aggregate-table family
+│   ├── xai_single.py                # L4 orchestrator: single-case flow
+│   │                                # (explain_single_image_detailed,
+│   │                                # run_single_case_demo)
+│   ├── xai_notebook.py              # L4 adapters: the 5 notebook_* wrappers
 │   └── report/                      # LaTeX report + assets consumed by Overleaf
 │       ├── XAI_Final-ProjectReport.tex
 │       └── assets/                  # figure02..figure13 PNGs referenced by the TEX
@@ -39,7 +58,7 @@ ITPG708Project/
 │   ├── export_project_demo_assets.py    # legacy demo export (figure1..figure10)
 │   ├── export_preprocessing_steps.py    # produces figure12_preprocessing_example
 │   ├── gen_class_distribution_overall.py  # produces figure13_class_distribution_overall
-│   ├── refresh_report_assets.py         # regenerates figure08/09/10/11 in src/report/assets
+│   ├── refresh_report_assets.py         # regenerates figure08/09/10/11a/11b in src/report/assets
 │   ├── build_ablation_table.py          # rebuilds mask-ablation + per-class CSVs
 │   ├── run_xai_full.py                  # shell-side driver for the XAI audit
 │   └── smoke_xai_n4.py                  # N=4 smoke test for XAI changes
@@ -56,17 +75,39 @@ ITPG708Project/
 
 ### Module dependency chain
 
-`src/` is a flat three-file layout (no package, no `__init__.py`) with a strict linear dependency chain:
+`src/` is a flat layout (no package, no `__init__.py`). The outer pipeline is a strict linear chain:
 
 ```
-data.py  →  train.py  →  xai.py
+data.py  →  train.py  →  src.xai
 ```
 
 - `data.py` has no upstream dependencies. It can run without PyTorch imports failing. Owns config loading, seeding, path utilities, CSV parsing, stratified splits, manifests, the preprocessing pipeline, and the `_FundusDataset` class.
 - `train.py` imports explicit names from `src.data`. Owns the `DRClassifier` model, focal loss, the training loop, temperature calibration, all evaluation metrics, and checkpoint/run plumbing.
-- `xai.py` imports from `src.data` and `src.train`. Owns Grad-CAM (via captum), SHAP (via DeepExplainer), the XAI audit (border ratio, multi-k faithfulness, AOPC, McNemar, Wilcoxon, Cohen's dz), explanation figures, and all notebook helpers. **Only `xai.py` imports `captum` and `shap`** — the other two modules run fine without them.
+- `src.xai` is a **thin facade** (`src/xai.py`, ~270 lines) that re-exports every function its callers used before the refactor. The actual code lives in 9 sibling modules organised as a strict DAG (layer N imports only from layers < N):
 
-This flat structure means the codebase can be opened, navigated, and edited without any module indirection.
+```
+L1 (leaves):          xai_viz      xai_stats      xai_metrics     xai_common
+                          │            │              │               │
+                          └────────────┼──────────────┼───────────────┘
+                                       ▼              ▼
+L2 (method compute):              xai_gradcam    xai_shap
+                                       └───────┬──────┘
+                                               ▼
+L3 (aggregate audit):                      xai_audit
+                                               │
+                                   ┌───────────┴───────────┐
+                                   ▼                       ▼
+L4 (orchestration / adapters): xai_single              xai_notebook
+                                   └───────────┬───────────┘
+                                               ▼
+L5 (public facade):                          xai.py
+```
+
+- **Only `xai_gradcam.py` imports `captum`; only `xai_shap.py` imports `shap`** — every other module runs fine without them.
+- External callers (notebook cells, `tools/*.py`, `refresh_report_assets.py`) keep using `from src.xai import X` verbatim. The facade re-exports preserve every pre-refactor name, so no import-site change was needed anywhere outside `src/`.
+- Sibling modules never import from `src.xai`; imports only flow bottom-up in the DAG. This gives the package a strict topological order and no circular-import risk.
+
+This layered flat structure means the codebase is easy to open and edit, and each concern (rendering, stats, masks, method compute, audit, orchestration) lives in a single small file.
 
 ---
 
@@ -109,12 +150,12 @@ dataset/aptos2019/
 
 ### 3. Device
 
-The pipeline auto-detects CUDA, MPS (Apple Silicon), or CPU via `_resolve_device` / `_resolve_xai_device` helpers in [src/data.py](src/data.py). No manual device selection is needed.
+The pipeline auto-detects CUDA, MPS (Apple Silicon), or CPU via `_resolve_device` (in [src/data.py](src/data.py)) and `_resolve_xai_device` (in [src/xai_common.py](src/xai_common.py)). No manual device selection is needed.
 
 **Known device-specific behaviour:**
 
 - On **MPS**, `DataLoader` workers are forced to `num_workers=0` inside inference helpers ([src/train.py:689](src/train.py#L689), [src/train.py:751](src/train.py#L751)) because multi-process DataLoaders with MPS tensors can deadlock.
-- On **CUDA**, SHAP DeepExplainer has a CPU fallback path (`_should_retry_shap_on_cpu` in [src/xai.py](src/xai.py)) that triggers automatically on CUDA OOM.
+- On **CUDA**, SHAP DeepExplainer has a CPU fallback path (`_should_retry_shap_on_cpu` in [src/xai_shap.py](src/xai_shap.py)) that triggers automatically on CUDA OOM.
 - On **CPU**, everything works but is ~5x slower.
 
 ---
@@ -171,7 +212,7 @@ The "Run Configuration" cell is the single control panel. All other cells read f
 2. Re-run from the run configuration cell. All upstream work (manifests, training, core evaluation) is cached.
 3. If it still fails, lower `shap_background_size` and `shap_max_samples` in [configs/base.yaml](configs/base.yaml). Current defaults: `shap_max_samples: 120`, `shap_background_size: 16`, `max_targets: 120`, `attribution_mask_radius_ratio: 0.50`.
 
-The pipeline has an automatic CPU fallback (`_should_retry_shap_on_cpu` in [src/xai.py](src/xai.py)) that catches CUDA OOM, MPS OOM, and SHAP in-place-view errors and retries the affected sample on CPU — slower but reliable.
+The pipeline has an automatic CPU fallback (`_should_retry_shap_on_cpu` in [src/xai_shap.py](src/xai_shap.py)) that catches CUDA OOM, MPS OOM, and SHAP in-place-view errors and retries the affected sample on CPU — slower but reliable.
 
 ---
 
@@ -266,7 +307,7 @@ This project aims for bit-for-bit determinism where possible. The guarantees are
 - **Model weights**: training uses `torch.manual_seed`, `numpy.random.seed`, `random.seed` set in [src/data.py](src/data.py) `_set_seed`. Given the same seed and config, trained weights are identical modulo non-deterministic backend kernels (MPS, CuDNN).
 - **Temperature calibration**: LBFGS optimisation on validation logits. Deterministic given the validation predictions.
 - **XAI audit target selection**: deterministic. The same 120 targets are selected every time for a given seed and predictions CSV.
-- **SHAP background sampling**: seeded with `random_state=int(seed)` across all three SHAP call sites ([src/xai.py:1600](src/xai.py#L1600), [src/xai.py:2116](src/xai.py#L2116), [src/xai.py:2648](src/xai.py#L2648)). Same seed, same background images across runs.
+- **SHAP background sampling**: seeded with `random_state=int(seed)` across all three SHAP call sites — the aggregate audit inside `run_xai_analysis` ([src/xai_audit.py](src/xai_audit.py)), the single-case detailed path `explain_single_image_detailed` ([src/xai_single.py](src/xai_single.py)), and the per-class SHAP grid renderer `plot_shap_grid` ([src/xai_shap.py](src/xai_shap.py)). Same seed, same background images across runs.
 - **Bootstrap CI**: seeded with `stats_bootstrap_seed: 1988`.
 
 **What's not deterministic:** backend-level floating-point non-determinism in convolutions on MPS and CuDNN can cause small numerical differences (~1e-4 level) in the forward pass and in gradient-based attribution maps. These do not affect the direction of any audit finding but can shift a sample near a faithfulness threshold between pass and fail. If you need bit-for-bit identical XAI outputs, run on CPU.
@@ -277,7 +318,7 @@ This project aims for bit-for-bit determinism where possible. The guarantees are
 
 There are two separate asset folders, for two different consumers.
 
-**1. `src/report/assets/` — figures referenced by the LaTeX report.** Each file is named `figureNN_description.png` (e.g. `figure02_training_history.png` ... `figure13_class_distribution_overall.png`) and is referenced by `\includegraphics{...}` in [src/report/XAI_Final-ProjectReport.tex](src/report/XAI_Final-ProjectReport.tex). Most of these are stable; the four that drift per XAI run are refreshed by:
+**1. `src/report/assets/` — figures referenced by the LaTeX report.** Each file is named `figureNN_description.png` (e.g. `figure02_training_history.png` ... `figure13_class_distribution_overall.png`) and is referenced by `\includegraphics{...}` in [src/report/XAI_Final-ProjectReport.tex](src/report/XAI_Final-ProjectReport.tex). Most of these are stable; the five that drift per XAI run are refreshed by:
 
 ```bash
 python tools/refresh_report_assets.py
