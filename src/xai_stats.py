@@ -1,11 +1,8 @@
-"""Pure statistics helpers for the XAI audit.
+"""Statistical helpers for the XAI audit.
 
-Extracted from ``src/xai.py`` as part of the architecture-via-relocation
-refactor. Every function here is a pure math / pandas transformation: no
-filesystem I/O, no model calls, no config reads. Used by the audit
-aggregation code in ``src/xai.py`` (and later ``src/xai_audit.py``).
-
-This module is a leaf: it must not import from any ``src.xai_*`` sibling.
+Paired Wilcoxon signed-rank, paired t-test, McNemar (exact + chi-square),
+and a bootstrap CI for pass rates. Pure math over numpy and pandas —
+no model calls, no disk I/O.
 """
 from __future__ import annotations
 

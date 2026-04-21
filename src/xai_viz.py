@@ -1,12 +1,7 @@
-"""Pure rendering helpers for the XAI audit.
+"""Rendering helpers for overlays and per-class attribution grids.
 
-Extracted from ``src/xai.py`` as part of the architecture-via-relocation
-refactor. Every function here is pure image math / matplotlib rendering:
-no model calls, no config reads, no SHAP/Grad-CAM compute. Used by the
-method-compute and orchestration modules in ``src/xai.py`` (and later
-``src/xai_gradcam.py``, ``src/xai_shap.py``).
-
-This module is a leaf: it must not import from any ``src.xai_*`` sibling.
+Only does image math and matplotlib drawing — no model calls, no config
+reads. Used by the Grad-CAM and SHAP modules to draw their figures.
 """
 from __future__ import annotations
 

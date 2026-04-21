@@ -1,13 +1,8 @@
-"""Runtime-glue helpers shared across the XAI modules.
+"""Small runtime helpers shared by the Grad-CAM and SHAP modules.
 
-Small utilities that both ``xai_gradcam`` and ``xai_shap`` need (device
-resolution, temperature-scaled prediction, calibration lookup). Living in
-this leaf keeps ``xai_gradcam`` and ``xai_shap`` from having to import
-upward into ``xai.py``, which would violate the strict-DAG invariant.
-
-This module is a leaf within the ``src.xai_*`` family: it must not import
-from any other ``src.xai_*`` sibling. It does reach across into
-``src.data`` and ``src.train``, which is allowed.
+Device resolution, a temperature-scaled single-image predict, and a
+calibration-temperature lookup. Kept in one leaf module so the compute
+modules can share them without importing each other.
 """
 from __future__ import annotations
 

@@ -1,13 +1,8 @@
-"""Notebook adapter wrappers for the XAI pipeline.
+"""Thin wrappers the project demo notebook calls for each XAI section.
 
-Extracted from ``src/xai.py`` as part of the architecture-via-relocation
-refactor. The five ``notebook_*`` wrappers compose the audit +
-single-case + visual-review pipelines and return display-ready markdown,
-tables, and figures for the project demo notebook.
-
-Dependency layer: L4 (notebook adapters). Imports from the orchestration
-layer (xai_audit, xai_single) and L1 helpers. Never imports from
-``src.xai``.
+Each ``notebook_*`` function composes the audit, single-case, or visual
+review pipelines and returns display-ready markdown, DataFrames, and
+matplotlib figures that the notebook just hands to ``display(...)``.
 """
 from __future__ import annotations
 

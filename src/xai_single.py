@@ -1,18 +1,13 @@
-"""Single-case explanation flow.
+"""End-to-end single-image XAI demo.
 
-Extracted from ``src/xai.py`` as part of the architecture-via-relocation
-refactor. Contains the three single-image orchestrators:
+Three entry points at different levels of detail:
 
-* ``predict_single_image_with_explanations``: quick-start prediction + XAI
-  for a single fundus image.
-* ``explain_single_image_detailed``: full per-layer Grad-CAM + SHAP detail
+* ``predict_single_image_with_explanations`` — quick prediction plus
+  Grad-CAM and SHAP on one image.
+* ``explain_single_image_detailed`` — full per-layer Grad-CAM and SHAP
   with per-case metrics.
-* ``run_single_case_demo``: end-to-end single-case demo producing both
-  figure-11a (class-conditional Grad-CAM) and figure-11b (SHAP per-class
-  grid) plus the supporting metrics table.
-
-Dependency layer: L4 (orchestration). Imports from L1/L2/L3. Never
-imports from ``src.xai``.
+* ``run_single_case_demo`` — renders the report figures 11a and 11b and
+  the supporting metrics table for the chosen sample.
 """
 from __future__ import annotations
 

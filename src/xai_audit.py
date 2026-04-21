@@ -1,14 +1,11 @@
-"""Aggregate audit orchestrator + audit-table builders.
+"""Aggregate XAI audit: per-sample loops and summary tables.
 
-Extracted from ``src/xai.py`` as part of the architecture-via-relocation
-refactor. Contains the big ``run_xai_analysis`` orchestrator (which drives
-the per-sample Grad-CAM and SHAP compute loops, applies the retinal-disc
-mask, writes per-sample CSVs, and builds the aggregate tables) plus the
-``_build_xai_*`` family of aggregate-table row builders.
-
-Dependency layer: L3 (aggregate audit). Imports from L1 leaves (xai_viz,
-xai_stats, xai_metrics, xai_common) and L2 method-compute modules
-(xai_gradcam, xai_shap). Never imports from ``src.xai``.
+``run_xai_analysis`` is the big orchestrator — it iterates Grad-CAM and
+SHAP over the 120 audit targets, applies the retinal-disc mask, and
+writes the per-sample CSVs. The ``_build_xai_*`` family assembles the
+aggregate tables that show up in the report: method stats, pairwise
+McNemar, continuous paired tests, per-class and per-correctness
+breakdowns.
 """
 from __future__ import annotations
 

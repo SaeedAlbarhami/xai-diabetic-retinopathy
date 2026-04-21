@@ -1,14 +1,8 @@
-"""Grad-CAM compute and the Grad-CAM figure builders.
+"""Grad-CAM: compute and plotting.
 
-Extracted from ``src/xai.py`` as part of the architecture-via-relocation
-refactor. Contains both the low-level Grad-CAM primitives (layer
-resolution, single-call heatmap generation) and the two public plotting
-entry points (the 4-case demo grid and the single-case class-conditional
-grid).
-
-Dependency layer: L2 (method compute). Imports L1 leaves
-(``xai_viz``, ``xai_metrics``, ``xai_common``) and never imports from
-``src.xai``.
+Resolves the target layer for the chosen backbone, runs Grad-CAM via
+captum, and draws the two report figures — the 4-case demo grid and the
+single-case class-conditional grid.
 """
 from __future__ import annotations
 

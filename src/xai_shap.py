@@ -1,18 +1,12 @@
-"""SHAP DeepExplainer compute and the SHAP figure builder.
+"""SHAP DeepExplainer: compute and plotting.
 
-Extracted from ``src/xai.py`` as part of the architecture-via-relocation
-refactor. Contains:
+Includes forward-pass patches for ResNet Bottleneck / BasicBlock and
+EfficientNet MBConv / FusedMBConv so DeepSHAP can backprop through them
+without hitting the in-place-view error on MPS or CUDA, plus the MPS/CUDA
+error classifiers that drive the automatic CPU fallback.
 
-* Error-classification helpers used to decide whether a SHAP failure on
-  MPS/CUDA should be retried on CPU.
-* Forward-pass patches for ResNet Bottleneck/BasicBlock and EfficientNet
-  MBConv/FusedMBConv that make DeepSHAP's backward-hook differentiation
-  compatible with in-place operations and residual additions.
-* The SHAP explainer/value runners with the known-warning filter.
-* ``plot_shap_grid``: the public per-class SHAP attribution grid.
-
-Dependency layer: L2 (method compute). Imports L1 leaves
-(``xai_viz``, ``xai_common``) and never imports from ``src.xai``.
+``plot_shap_grid`` is the public per-class SHAP attribution grid used by
+the single-case report figure and by the audit's visual review.
 """
 from __future__ import annotations
 

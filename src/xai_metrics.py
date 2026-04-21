@@ -1,15 +1,12 @@
-"""Per-sample attribution-metric helpers for the XAI audit.
+"""Per-sample metrics computed on a single attribution map.
 
-Extracted from ``src/xai.py`` as part of the architecture-via-relocation
-refactor. Contains the geometric masks (border ring, retinal disc), the
-attribution-mass ratio computation, and the faithfulness perturbation
-loop (single-k and multi-k with AOPC average).
+Includes the retinal-disc mask and the 10% border ring, the attribution
+mass ratios (border ratio and retina ratio), and the faithfulness delta
+at one or more k values (with AOPC as the mean across k).
 
-The faithfulness helpers are not pure math — they run the model on masked
-inputs. But they are *per-sample* utilities rather than orchestration, so
-they live here alongside the other metric helpers.
-
-This module is a leaf: it must not import from any ``src.xai_*`` sibling.
+The faithfulness helpers do run the model on masked inputs, but they
+operate on one sample at a time, so they sit with the other per-sample
+metric helpers.
 """
 from __future__ import annotations
 

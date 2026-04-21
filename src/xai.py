@@ -183,9 +183,9 @@ from src.train import (  # noqa: F401
     clean_generated_outputs,
 )
 
-# Re-export leaf helpers from sibling modules so ``src.xai.<name>`` continues
-# to resolve for every name that resolved before the refactor. These siblings
-# are pure leaves (no imports from src.xai), so no cycle risk.
+# Re-exports from the xai_* sibling modules. Anything external callers
+# used to import from src.xai still imports from src.xai — this block is
+# what makes that true after the split.
 from src.xai_stats import (  # noqa: F401
     _bootstrap_pass_rate_ci,
     _xai_pass_flag,
@@ -266,8 +266,8 @@ from src.xai_notebook import (  # noqa: F401
     notebook_run_single_case_report,
 )
 
-# Annotate the re-exported display map to restore the ``__annotations__``
-# module attribute that existed pre-refactor (backwards-compat parity).
+# Annotating this re-exported name so dir(src.xai) matches what it
+# looked like before the split (keeps __annotations__ non-empty).
 _CONTINUOUS_METRIC_DISPLAY: dict[str, tuple[str, str]]
 
 
