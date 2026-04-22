@@ -182,7 +182,6 @@ ITPG708Project/
 │       ├── XAI_Final-ProjectReport.tex
 │       └── assets/                  # figure02..figure13 PNGs referenced by the TEX
 ├── tools/
-│   ├── export_project_demo_assets.py    # legacy demo export (figure1..figure10)
 │   ├── export_preprocessing_steps.py    # produces figure12_preprocessing_example
 │   ├── gen_class_distribution_overall.py  # produces figure13_class_distribution_overall
 │   ├── refresh_report_assets.py         # regenerates figure08/09/10/11a/11b in src/report/assets
@@ -277,7 +276,7 @@ dataset/aptos2019/
 
 ### Preprocessing steps
 
-Every fundus image goes through a four-stage preprocessing pipeline before the model sees it, implemented in [src/data.py:856-890](src/data.py#L856-L890) (`_apply_fundus_preprocessing`):
+Every fundus image goes through the following preprocessing pipeline before the model sees it, implemented in [src/data.py:856-890](src/data.py#L856-L890) (`_apply_fundus_preprocessing`):
 
 ```
 raw fundus  →  Resize 380²  →  CLAHE  →  Ben-Graham  →  Circle crop  →  ImageNet norm  →  model
@@ -398,25 +397,17 @@ This project aims for bit-for-bit determinism where possible. The guarantees are
 
 ## Exporting figures
 
-There are two separate asset folders, for two different consumers.
-
-**1. `src/report/assets/` — figures referenced by the LaTeX report.** Each file is named `figureNN_description.png` (e.g. `figure02_training_history.png` ... `figure13_class_distribution_overall.png`) and is referenced by `\includegraphics{...}` in the LaTeX source (kept in Overleaf; only the compiled [PDF](src/report/XAI_Final-ProjectReport.pdf) is checked in here). Most of these are stable; the five that drift per XAI run are refreshed by:
+Figures referenced by the LaTeX report live in `src/report/assets/` and are named `figureNN_description.png` (e.g. `figure02_training_history.png` ... `figure13_class_distribution_overall.png`). Most are stable; the five that drift per XAI run are refreshed by:
 
 ```bash
 python tools/refresh_report_assets.py
 ```
 
-This regenerates `figure08_xai_explanation_pass_rate.png`, copies the latest `figure09_gradcam_demo_grid.png` / `figure10_shap_demo_grid.png`, and refreshes the single-case pair `figure11a_gradcam_class_grid.png` / `figure11b_shap_class_grid.png` (equal-width, symmetric assets used as two subfigures in the report). The preprocessing example (`figure12`) and overall class distribution (`figure13`) are one-shot generators:
+This regenerates `figure08_xai_explanation_pass_rate.png`, copies the latest `figure09_gradcam_demo_grid.png` / `figure10_shap_demo_grid.png`, and refreshes the single-case pair `figure11a_gradcam_class_grid.png` / `figure11b_shap_class_grid.png`. The preprocessing example (`figure12`) and overall class distribution (`figure13`) are one-shot generators:
 
 ```bash
 python tools/export_preprocessing_steps.py         # figure12
 python tools/gen_class_distribution_overall.py     # figure13
-```
-
-**2. `assets/` — legacy flat export for sharing a demo zip.** Uses `figure1.png` / `figure2.png` ... `figure10.png` (no leading zeros, different numbering). This is not referenced by the report — use it only if you want to hand someone a quick figure bundle.
-
-```bash
-python tools/export_project_demo_assets.py --output-dir assets --zip-path assets.zip
 ```
 
 ---
@@ -435,15 +426,11 @@ All paths below are created locally when you run the notebook; none are checked 
 | `artifacts/reports/figures/gradcam/` | One Grad-CAM overlay PNG per (target, layer) — 360 files for N=120 × 3 layers |
 | `artifacts/reports/figures/shap/` | One SHAP overlay PNG per target — 120 files for N=120 |
 | `artifacts/reports/figures/single/` | Single-case demo outputs |
-| `assets/` | Numbered figures for a quick demo zip (produced by the export tool) |
 
 ---
 
 ## Development notes
 
 - **Changing hyperparameters**: edit [configs/base.yaml](configs/base.yaml). Any change that affects the checkpoint signature (`training` section) will trigger a fresh training run next time the training cell executes.
-- **Running without captum/shap**: `data.py` and `train.py` have no dependency on explainability libraries. You can run sections 1–6 (setup through core evaluation) in an environment that has only the core ML stack. Only Section 7 requires captum and shap.
-- **Adding a new seed**: add it to `project.seed_list` in [configs/base.yaml](configs/base.yaml), set `SEED` in the run configuration cell, and re-run. The manifest stratification honours `stratify_seed` separately from the training seed.
-- **Multi-seed benchmarking**: `run_benchmark_experiments` in [src/train.py](src/train.py) loops over `seed_list` and produces a cross-seed scoreboard via `export_benchmark_scoreboard`.
+- **Running without captum/shap**: `data.py` and `train.py` have no dependency on explainability libraries. Sections 1–6 (setup through core evaluation) can run in an environment that has only the core ML stack. Only Section 7 requires captum and shap.
 - **Smaller / faster audit for development**: in [configs/base.yaml](configs/base.yaml), set `max_targets` and `shap_max_samples` to a small value like 20 or 40.
-- **Cross-dataset evaluation** (future work): the pipeline supports a Roboflow source via `data.source: roboflow` in the config, but it has not been exercised for the current committed run.
