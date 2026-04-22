@@ -145,7 +145,22 @@ dataset/aptos2019/
 └── test_images/             # test image PNGs
 ```
 
-### 3. Device
+### 3. Hardware requirements
+
+The committed run was produced on the following machine:
+
+| Component | Specification |
+|---|---|
+| Model | MacBook Pro (Mac15,8) |
+| Chip | Apple M3 Max |
+| CPU cores | 16 (12 performance + 4 efficiency) |
+| GPU | Apple M3 Max integrated GPU (Metal 4, used via PyTorch MPS) |
+| Unified memory | 48 GB |
+| Operating system | macOS 26.4.1 (Build 25E253) |
+
+End-to-end runtime on this machine: ~60 min for one fresh training run, ~15 min for the XAI audit section. CUDA GPUs and CPU-only machines also work — see Device behaviour below.
+
+### 4. Device
 
 The pipeline auto-detects CUDA, MPS (Apple Silicon), or CPU via `_resolve_device` (in [src/data.py](src/data.py)) and `_resolve_xai_device` (in [src/xai_common.py](src/xai_common.py)). No manual device selection is needed.
 
@@ -210,6 +225,25 @@ The "Run Configuration" cell is the single control panel. All other cells read f
 3. If it still fails, lower `shap_background_size` and `shap_max_samples` in [configs/base.yaml](configs/base.yaml). Current defaults: `shap_max_samples: 120`, `shap_background_size: 16`, `max_targets: 120`, `attribution_mask_radius_ratio: 0.50`.
 
 The pipeline has an automatic CPU fallback (`_should_retry_shap_on_cpu` in [src/xai_shap.py](src/xai_shap.py)) that catches CUDA OOM, MPS OOM, and SHAP in-place-view errors and retries the affected sample on CPU — slower but reliable.
+
+---
+
+## Sample input and expected output
+
+**Input.** One 8-bit RGB fundus photograph (PNG, any native resolution; APTOS 2019 images are typically ~3000×2000). Example path: `dataset/aptos2019/test_images/1ae8c165fd53.png`.
+
+**Pipeline output for a single image.** For every test image the pipeline emits:
+
+1. **Predicted DR grade ŷ ∈ {No_DR, Mild, Moderate, Severe, Proliferative_DR}** and softmax confidence p(ŷ) (temperature-calibrated).
+2. **Grad-CAM heatmap** over the retinal disc, showing which regions drove the prediction.
+3. **SHAP attribution map** (per-class, signed), with positive contributions in red and negative in blue.
+4. Per-sample XAI metrics (border ratio, retina ratio, faithfulness Δ_k, AOPC) logged to `artifacts/reports/tables/rq1_gradcam_*.csv` / `rq2_shap_*.csv`.
+
+**Example (single-case Grad-CAM class grid, one No_DR image):**
+
+![Single-case Grad-CAM class grid](src/report/assets/figure11a_gradcam_class_grid.png)
+
+**Aggregate output across the 120-image audit:** per-class Grad-CAM demo grid and SHAP demo grid (Section 8 of the notebook), plus the continuous-metric comparison in `rq_xai_continuous_*.csv`. The committed run reaches accuracy 82.2% and quadratic weighted kappa 0.896 on the 550-image APTOS 2019 test split — see [the project report](src/report/XAI_Final-ProjectReport.pdf) for the full result tables.
 
 ---
 
