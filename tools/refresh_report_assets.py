@@ -2,14 +2,14 @@
 
 Regenerates or copies the four figures that can drift between runs:
 
-* ``figure08_xai_explanation_pass_rate.png`` — rebuilt via the XAI summary
+* ``figure11_xai_explanation_pass_rate.png`` — rebuilt via the XAI summary
   helper so the softened chart title ("Operational Threshold Summary") matches
   the current ``src/xai.py`` implementation, not the pre-reframe title.
-* ``figure09_gradcam_demo_grid.png`` — copied from the latest
+* ``figure12_gradcam_demo_grid.png`` — copied from the latest
   ``artifacts/reports/figures/gradcam_demo_grid.png``.
-* ``figure10_shap_demo_grid.png`` — copied from the latest
+* ``figure13_shap_demo_grid.png`` — copied from the latest
   ``artifacts/reports/figures/shap_demo_grid.png``.
-* ``figure11a_gradcam_class_grid.png`` and ``figure11b_shap_class_grid.png``
+* ``figure14_gradcam_class_grid.png`` and ``figure15_shap_class_grid.png``
   — copied from the latest single-case class-conditional Grad-CAM grid and
   SHAP per-class grid under ``artifacts/reports/figures/single/``. Emitted as
   two separate assets at the same target width so the report can stack them
@@ -55,21 +55,21 @@ def _latest(pattern: str) -> Path:
     return matches[0]
 
 
-def refresh_figure08(cfg) -> None:
+def refresh_figure11(cfg) -> None:
     """Regenerate the pass-rate chart with the current softened title."""
     summary = notebook_load_xai_committee_summary(cfg, seed=SEED, split=SPLIT)
     fig = summary.get("pass_rate_fig")
     if fig is None:
         raise RuntimeError("pass_rate_fig not produced by notebook_load_xai_committee_summary")
-    _save_figure(fig, ASSETS / "figure08_xai_explanation_pass_rate.png")
-    print(f"wrote {ASSETS / 'figure08_xai_explanation_pass_rate.png'}")
+    _save_figure(fig, ASSETS / "figure11_xai_explanation_pass_rate.png")
+    print(f"wrote {ASSETS / 'figure11_xai_explanation_pass_rate.png'}")
 
 
 def refresh_demo_grids() -> None:
     """Copy the latest demo-grid PNGs into the report assets."""
     for src_name, dst_name in [
-        ("gradcam_demo_grid.png", "figure09_gradcam_demo_grid.png"),
-        ("shap_demo_grid.png", "figure10_shap_demo_grid.png"),
+        ("gradcam_demo_grid.png", "figure12_gradcam_demo_grid.png"),
+        ("shap_demo_grid.png", "figure13_shap_demo_grid.png"),
     ]:
         src = FIGS_DIR / src_name
         if not src.exists():
@@ -79,10 +79,10 @@ def refresh_demo_grids() -> None:
         print(f"copied {src} -> {dst}")
 
 
-def refresh_figure11() -> None:
+def refresh_single_case_grids() -> None:
     """Emit the single-case figure as two separate, equal-width assets.
 
-    Writes ``figure11a_gradcam_class_grid.png`` and ``figure11b_shap_class_grid.png``
+    Writes ``figure14_gradcam_class_grid.png`` and ``figure15_shap_class_grid.png``
     to ``src/report/assets/``, resized so both PNGs share the same width. Each
     input PNG already renders a (1 x (1+num_classes)) grid from the shared
     renderer, so equal width yields equal per-cell pixel budget.
@@ -105,8 +105,8 @@ def refresh_figure11() -> None:
         new_h = int(round(bottom.height * (target_w / bottom.width)))
         bottom = bottom.resize((target_w, new_h), Image.LANCZOS)
 
-    out_gradcam = ASSETS / "figure11a_gradcam_class_grid.png"
-    out_shap = ASSETS / "figure11b_shap_class_grid.png"
+    out_gradcam = ASSETS / "figure14_gradcam_class_grid.png"
+    out_shap = ASSETS / "figure15_shap_class_grid.png"
     top.save(out_gradcam, format="PNG", optimize=True)
     bottom.save(out_shap, format="PNG", optimize=True)
     print(
@@ -124,9 +124,9 @@ def refresh_figure11() -> None:
 
 def main() -> int:
     cfg = load_project_config(PROJECT_ROOT / "configs" / "base.yaml")
-    refresh_figure08(cfg)
+    refresh_figure11(cfg)
     refresh_demo_grids()
-    refresh_figure11()
+    refresh_single_case_grids()
     return 0
 
 

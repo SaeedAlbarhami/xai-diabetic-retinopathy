@@ -1,6 +1,6 @@
 """Render the overall APTOS 2019 class distribution bar chart.
 
-One-shot generator for ``src/report/assets/figure13_class_distribution_overall.png``.
+One-shot generator for ``src/report/assets/figure08_class_distribution_overall.png``.
 Reads counts from the manifest summary JSON (the benchmark split is fully
 deterministic at seed=1988, so the totals never change between runs) and the
 class label order from ``configs/base.yaml``.
@@ -19,7 +19,7 @@ import yaml
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 MANIFEST_PATH = PROJECT_ROOT / "artifacts" / "manifests" / "summary_aptos2019_85-15-v10_seed1988.json"
 CONFIG_PATH = PROJECT_ROOT / "configs" / "base.yaml"
-OUT_PATH = PROJECT_ROOT / "src" / "report" / "assets" / "figure13_class_distribution_overall.png"
+OUT_PATH = PROJECT_ROOT / "src" / "report" / "assets" / "figure08_class_distribution_overall.png"
 
 
 def main() -> int:

@@ -5,7 +5,7 @@ Loads a single representative Moderate-DR fundus image from the APTOS 2019
 training set and replays every preprocessing step in the exact order and with
 the exact parameters used by `src.data._apply_fundus_preprocessing` (see
 src/data.py:856-890). Each intermediate state is rendered in a horizontal
-strip and saved as `src/report/assets/figure12_preprocessing_example.png`.
+strip and saved as `src/report/assets/figure04_preprocessing_example.png`.
 
 The composed figure is the visual companion to the TikZ preprocessing flow
 chart and the parameter table in Section 6 of the report. Rerunning this
@@ -30,7 +30,7 @@ from src.data import load_project_config  # noqa: E402
 
 DEMO_SAMPLE_ID = "source_aptos_train_86baef833ae0_1542"
 DEMO_IMAGE_PATH = PROJECT_ROOT / "dataset" / "aptos2019" / "train_images" / "86baef833ae0.png"
-OUTPUT_PATH = PROJECT_ROOT / "src" / "report" / "assets" / "figure12_preprocessing_example.png"
+OUTPUT_PATH = PROJECT_ROOT / "src" / "report" / "assets" / "figure04_preprocessing_example.png"
 
 
 def _step_resize(img_rgb: np.ndarray, image_size: int) -> np.ndarray:
