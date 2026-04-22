@@ -260,6 +260,12 @@ def _build_xai_pass_by_class_table(
     pass_col: str,
     class_names: list[str] | None = None,
 ) -> pd.DataFrame:
+    """Pass rate broken down by class. Groups by the ``target_class`` column,
+    which stores the value of whatever column ``target_balance_class_col`` in
+    config points at — defaults to ``true_class`` in ``configs/base.yaml``.
+    So the emitted ``class_id``/``class_name`` reflects the TRUE class, not
+    the predicted class, unless the config is changed.
+    """
     out_cols = ["method", "class_id", "class_name", "n", "pass_rate"]
     if len(df) == 0 or pass_col not in df.columns or "target_class" not in df.columns:
         return pd.DataFrame(columns=out_cols)
@@ -384,6 +390,13 @@ def _choose_xai_targets(
     balance_by_class: bool = True,
     fill_missing_from_all: bool = True,
 ) -> pd.DataFrame:
+    """Pick the XAI audit subset, aiming for ``max_targets / num_classes`` per
+    ``class_col``. Perfect balance is a target, not a guarantee: if a rare
+    class has fewer high-confidence samples than the per-class quota, the
+    filler pass tops up from remaining classes to reach ``max_targets`` total.
+    Actual per-class Ns will therefore drift from the nominal quota on
+    imbalanced datasets (e.g. APTOS 2019 Severe/Proliferative).
+    """
     target = df[df["confidence"] >= high_conf_threshold].copy()
     if len(target) == 0:
         target = df.sort_values("confidence", ascending=False).head(min(32, len(df))).copy()

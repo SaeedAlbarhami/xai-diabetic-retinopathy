@@ -111,6 +111,14 @@ def _mask_by_score_map(image_tensor: torch.Tensor, score_map: np.ndarray, top_k_
 
 @torch.inference_mode()
 def _faithfulness_delta(model: nn.Module, image_tensor: torch.Tensor, score_map: np.ndarray, pred_class: int, top_k_ratio: float = 0.20, random_seed: int = 1988) -> float:
+    """Random-baseline-adjusted faithfulness delta at one k.
+
+    Returns Δ_k = p̂(I_rand_k) − p̂(I_top_k), i.e. (drop after zeroing the
+    top-k% most-attributed pixels) minus (drop after zeroing a matched-size
+    random subset). Positive ⇒ the attribution's top-k matters more than
+    random pixels of the same count. Single random draw per call (R=1) with
+    a fixed seed — not an average over R draws.
+    """
     logits_base = model(image_tensor)
     probs_base = torch.softmax(logits_base, dim=1)
     base_prob = float(probs_base[0, pred_class].item())
