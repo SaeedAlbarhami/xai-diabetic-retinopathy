@@ -1,10 +1,16 @@
-# Explainable Diabetic Retinopathy Classification Pipeline
+# Medical Imaging, Explainable AI for Diabetic Retinopathy Modeling to assess quality
 
 ## Brief Project Description
 
 An end-to-end reproducible pipeline for five-class diabetic retinopathy (DR) severity grading on the APTOS 2019 dataset, with post-hoc explainability via Grad-CAM and SHAP. Built as the ITPG708 final project.
 
 This README covers how to run the code and where outputs land. Experimental findings and statistical results live in [the project report](src/report/XAI_Final-ProjectReport.pdf).
+
+### System architecture
+
+The main pipeline (left) takes a fundus image through pre-processing and the trained CNN model $f_\theta$, yielding the predicted DR grade $\hat{y}$ and its confidence $p(\hat{y})$. The XAI branch (right) is strictly post-hoc: Grad-CAM and SHAP both consume the trained model and the predicted class $\hat{y}$, emit attribution maps, and pass them through the retinal-disc mask $M$. The prediction and the masked explanations are then combined into a single clinician-facing report.
+
+![System architecture](src/report/assets/figure01_system_architecture.png)
 
 **Stack:**
 
