@@ -2,14 +2,14 @@
 
 An end-to-end reproducible pipeline for five-class diabetic retinopathy (DR) severity grading on the APTOS 2019 dataset, with post-hoc explainability via Grad-CAM and SHAP. Built as the ITPG708 final project.
 
-This README is a developer guide: how to set it up, how to run it, where the outputs land, and how to extend it. Experimental findings and statistical results live in [the project report](src/report/XAI_Final-ProjectReport.pdf) — this file only contains what you need to operate the code.
+This README covers how to run the code and where outputs land. Experimental findings and statistical results live in [the project report](src/report/XAI_Final-ProjectReport.pdf).
 
-**Stack at a glance:**
+**Stack:**
 
 - Backbone: EfficientNet-B4 (ImageNet-pretrained) fine-tuned with focal loss, plus temperature scaling post-training.
 - Explainers: Grad-CAM (captum `LayerGradCam`) and SHAP (`DeepExplainer`), with a retinal-disc attribution mask applied before any XAI metric is computed.
 - Single entry point: [notebooks/project_demo.ipynb](notebooks/project_demo.ipynb).
-- Every stage is idempotent — once a checkpoint, predictions file, or XAI table exists, subsequent runs reuse it unless you force a rebuild.
+- Every stage is idempotent: once a checkpoint, predictions file, or XAI table exists, subsequent runs reuse it unless you force a rebuild.
 
 ---
 
@@ -29,28 +29,27 @@ ITPG708Project/
 │   ├── train.py                     # DRClassifier, focal loss, training loop,
 │   │                                # temperature calibration, evaluation,
 │   │                                # checkpoint/run plumbing
-│   ├── xai.py                       # public facade — re-exports every
-│   │                                # name its callers used pre-refactor;
-│   │                                # implementation is split across
-│   │                                # xai_*.py siblings below
-│   ├── xai_viz.py                   # L1 leaf: pure rendering (overlays,
+│   ├── xai.py                       # public facade; re-exports every
+│   │                                # name; implementation is split
+│   │                                # across the xai_*.py siblings below
+│   ├── xai_viz.py                   # pure rendering (overlays,
 │   │                                # attribution-grid renderer)
-│   ├── xai_stats.py                 # L1 leaf: paired Wilcoxon + t-test +
+│   ├── xai_stats.py                 # paired Wilcoxon + t-test +
 │   │                                # McNemar + bootstrap CI
-│   ├── xai_metrics.py               # L1 leaf: retinal-disc mask, border
+│   ├── xai_metrics.py               # retinal-disc mask, border
 │   │                                # ring, mass ratios, multi-k faithfulness
-│   ├── xai_common.py                # L1 leaf: device resolver, predict-
+│   ├── xai_common.py                # device resolver, predict-
 │   │                                # with-temperature, calibration lookup
-│   ├── xai_gradcam.py               # L2 compute: Grad-CAM + layer resolver
+│   ├── xai_gradcam.py               # Grad-CAM + layer resolver
 │   │                                # + 4-case demo grid + class grid
-│   ├── xai_shap.py                  # L2 compute: SHAP + MBConv/Bottleneck
+│   ├── xai_shap.py                  # SHAP + MBConv/Bottleneck
 │   │                                # compat patches + per-class SHAP grid
-│   ├── xai_audit.py                 # L3 orchestrator: run_xai_analysis
+│   ├── xai_audit.py                 # run_xai_analysis orchestrator
 │   │                                # + _build_xai_* aggregate-table family
-│   ├── xai_single.py                # L4 orchestrator: single-case flow
+│   ├── xai_single.py                # single-case flow
 │   │                                # (explain_single_image_detailed,
 │   │                                # run_single_case_demo)
-│   ├── xai_notebook.py              # L4 adapters: the 5 notebook_* wrappers
+│   ├── xai_notebook.py              # the 5 notebook_* wrappers
 │   └── report/                      # LaTeX report + assets consumed by Overleaf
 │       ├── XAI_Final-ProjectReport.tex
 │       └── assets/                  # figure02..figure13 PNGs referenced by the TEX
@@ -83,7 +82,7 @@ data.py  →  train.py  →  src.xai
 
 - `data.py` has no upstream dependencies. It can run without PyTorch imports failing. Owns config loading, seeding, path utilities, CSV parsing, stratified splits, manifests, the preprocessing pipeline, and the `_FundusDataset` class.
 - `train.py` imports explicit names from `src.data`. Owns the `DRClassifier` model, focal loss, the training loop, temperature calibration, all evaluation metrics, and checkpoint/run plumbing.
-- `src.xai` is a **thin facade** (`src/xai.py`, ~270 lines) that re-exports every function its callers used before the refactor. The actual code lives in 9 sibling modules organised as a strict DAG (layer N imports only from layers < N):
+- `src.xai` is a **thin facade** (`src/xai.py`, ~270 lines) that re-exports every public name. The actual code lives in 9 sibling modules organised as a strict DAG (layer N imports only from layers < N):
 
 ```
 L1 (leaves):          xai_viz      xai_stats      xai_metrics     xai_common
@@ -103,11 +102,9 @@ L4 (orchestration / adapters): xai_single              xai_notebook
 L5 (public facade):                          xai.py
 ```
 
-- **Only `xai_gradcam.py` imports `captum`; only `xai_shap.py` imports `shap`** — every other module runs fine without them.
-- External callers (notebook cells, `tools/*.py`, `refresh_report_assets.py`) keep using `from src.xai import X` verbatim. The facade re-exports preserve every pre-refactor name, so no import-site change was needed anywhere outside `src/`.
-- Sibling modules never import from `src.xai`; imports only flow bottom-up in the DAG. This gives the package a strict topological order and no circular-import risk.
-
-This layered flat structure means the codebase is easy to open and edit, and each concern (rendering, stats, masks, method compute, audit, orchestration) lives in a single small file.
+- **Only `xai_gradcam.py` imports `captum`; only `xai_shap.py` imports `shap`.** Every other module runs fine without them.
+- External callers (notebook cells, `tools/*.py`, `refresh_report_assets.py`) use `from src.xai import X`. The facade re-exports preserve every public name, so no import-site change is needed anywhere outside `src/`.
+- Sibling modules never import from `src.xai`; imports only flow bottom-up in the DAG, so there is a strict topological order and no circular-import risk.
 
 ---
 
@@ -192,9 +189,9 @@ The "Run Configuration" cell is the single control panel. All other cells read f
 | 1. Environment Setup | adds project root to `sys.path` | <1s | — |
 | 2. Run Configuration | sets the control flags above | <1s | — |
 | 3. Optional Output Reset | wipes artifacts if `RUN_CLEAN_BEFORE_START=True` | <1s | — |
-| 4. Data Preparation | generates / reuses train/val/test manifests | ~5–10s | [artifacts/manifests/](artifacts/manifests/) |
-| 5. Model Fine-Tuning | reuses checkpoint if config signature matches; else trains from scratch | ~5s reused / ~60min fresh | [artifacts/checkpoints/](artifacts/checkpoints/) + calibration JSON |
-| 6. Core Evaluation | inference on the eval split, confusion matrix, per-class metrics, headline table, calibration | ~1–2min on MPS | [artifacts/predictions/](artifacts/predictions/), [artifacts/reports/tables/](artifacts/reports/tables/) |
+| 4. Data Preparation | generates / reuses train/val/test manifests | ~5–10s | `artifacts/manifests/` |
+| 5. Model Fine-Tuning | reuses checkpoint if config signature matches; else trains from scratch | ~5s reused / ~60min fresh | `artifacts/checkpoints/` + calibration JSON |
+| 6. Core Evaluation | inference on the eval split, confusion matrix, per-class metrics, headline table, calibration | ~1–2min on MPS | `artifacts/predictions/`, `artifacts/reports/tables/` |
 | **7. Explainability Analysis** | Grad-CAM + SHAP audit at N=120 (24 per class), retinal-disc mask applied before metrics, then renders the continuous + threshold comparison tables. Gated advanced breakdown shown when `SHOW_ADVANCED_XAI_AUDIT=True`. | ~13–16 min on MPS at `shap_background_size=16` | `rq_xai_method_stats`, `rq_xai_pairwise`, `rq_xai_continuous`, `rq_xai_mask_ablation`, `rq_xai_per_class`, `rq1_gradcam`, `rq2_shap`, per-sample Grad-CAM / SHAP overlay PNGs |
 | 8. Visual Review | Grad-CAM + SHAP demo grids across target classes | ~3–5min | `gradcam_demo_grid.png`, `shap_demo_grid.png` |
 | 9. Single-Case Demo | detailed XAI panel for one fundus image | ~30s | `artifacts/reports/figures/single/` |
@@ -232,7 +229,9 @@ raw fundus  →  Resize 380²  →  CLAHE  →  Ben-Graham  →  Circle crop  �
 | Circle crop | Masks the fundus disc region, suppressing outer-frame artefacts from the camera aperture. | `circle_crop_ratio: 1.00` |
 | ImageNet norm | Standard mean/std normalisation expected by the ImageNet-pretrained backbone. | `mean=[0.485, 0.456, 0.406]`, `std=[0.229, 0.224, 0.225]` |
 
-A 5-panel worked example is generated by [tools/export_preprocessing_steps.py](tools/export_preprocessing_steps.py) and embedded in the report as `figure12_preprocessing_example.png`.
+A 5-panel worked example is generated by [tools/export_preprocessing_steps.py](tools/export_preprocessing_steps.py) and embedded in the report as `figure12_preprocessing_example.png`:
+
+![Preprocessing pipeline](src/report/assets/figure12_preprocessing_example.png)
 
 ---
 
@@ -240,7 +239,7 @@ A 5-panel worked example is generated by [tools/export_preprocessing_steps.py](t
 
 Both explainers run against the same preprocessed input and the same predicted class, then their maps go through one symmetric post-processing step before any metric is computed:
 
-1. **Grad-CAM** via captum `LayerGradCam`, evaluated at EfficientNet-B4 layers 2 / 3 / 4. Per-target layer selection uses a joint criterion `aopc × (1 − border_ratio)` (see [gradcam_layer_selection CSV](artifacts/reports/tables/gradcam_layer_selection_seed1988_test.csv)).
+1. **Grad-CAM** via captum `LayerGradCam`, evaluated at EfficientNet-B4 layers 2 / 3 / 4. Per-target layer selection uses a joint criterion `aopc × (1 − border_ratio)` (see `artifacts/reports/tables/gradcam_layer_selection_seed1988_test.csv`, produced locally).
 2. **SHAP DeepExplainer** on raw pixels, against a class-balanced background of `shap_background_size` training images sampled deterministically with `random_state=stratify_seed`.
 3. **Retinal-disc attribution mask.** Both maps are multiplied element-wise by a circular mask with radius `attribution_mask_radius_ratio × min(H, W)` = `0.50 × 380 = 190 px` before border ratio, retina ratio, faithfulness deltas, and AOPC are computed. The mask corrects a bilinear-upsample artefact in Grad-CAM (attribution leaking onto the dark circle-crop corners); it has no numerical effect on SHAP because the corner region is constant across preprocessed inputs and the SHAP background, so DeepSHAP contributes zero there. Both masked and raw values are written to the per-sample CSVs (`border_ratio` / `border_ratio_raw` etc.) so the effect is auditable.
 
@@ -272,13 +271,15 @@ Provenance only — helps you confirm you're working against the expected checkp
 - **Calibration temperature:** 0.7435
 - **XAI audit N:** 120 (24 per class), device MPS, no CPU fallback
 
-All per-class tables, confusion matrix, and XAI CSVs are under [artifacts/reports/tables/](artifacts/reports/tables/).
+![Headline metrics](src/report/assets/figure06_headline_metrics.png)
+
+All per-class tables, confusion matrix, and XAI CSVs are under `artifacts/reports/tables/` after a local run.
 
 ---
 
 ## XAI audit artifacts
 
-After Section 7 completes, the following CSVs land in [artifacts/reports/tables/](artifacts/reports/tables/):
+After Section 7 completes, the following CSVs land in `artifacts/reports/tables/`:
 
 | File | What it contains |
 |---|---|
@@ -318,7 +319,7 @@ This project aims for bit-for-bit determinism where possible. The guarantees are
 
 There are two separate asset folders, for two different consumers.
 
-**1. `src/report/assets/` — figures referenced by the LaTeX report.** Each file is named `figureNN_description.png` (e.g. `figure02_training_history.png` ... `figure13_class_distribution_overall.png`) and is referenced by `\includegraphics{...}` in [src/report/XAI_Final-ProjectReport.tex](src/report/XAI_Final-ProjectReport.tex). Most of these are stable; the five that drift per XAI run are refreshed by:
+**1. `src/report/assets/` — figures referenced by the LaTeX report.** Each file is named `figureNN_description.png` (e.g. `figure02_training_history.png` ... `figure13_class_distribution_overall.png`) and is referenced by `\includegraphics{...}` in the LaTeX source (kept in Overleaf; only the compiled [PDF](src/report/XAI_Final-ProjectReport.pdf) is checked in here). Most of these are stable; the five that drift per XAI run are refreshed by:
 
 ```bash
 python tools/refresh_report_assets.py
@@ -341,17 +342,19 @@ python tools/export_project_demo_assets.py --output-dir assets --zip-path assets
 
 ## Output folders
 
+All paths below are created locally when you run the notebook; none are checked into git.
+
 | Path | Contents |
 |---|---|
-| [artifacts/manifests/](artifacts/manifests/) | Frozen train/val/test splits (per-seed CSVs) |
-| [artifacts/checkpoints/](artifacts/checkpoints/) | Trained `.pt` and calibration `.json` keyed by run_id |
-| [artifacts/predictions/](artifacts/predictions/) | Per-split prediction CSVs with logits, probabilities, and labels |
-| [artifacts/logs/](artifacts/logs/) | Run records, training history, XAI runtime status logs (`*_gradcam_status.json`, `*_shap_status.json`) |
-| [artifacts/reports/tables/](artifacts/reports/tables/) | Evaluation and XAI audit CSVs (see XAI audit artifacts table above) |
-| [artifacts/reports/figures/gradcam/](artifacts/reports/figures/) | One Grad-CAM overlay PNG per (target, layer) — 360 files for N=120 × 3 layers |
-| [artifacts/reports/figures/shap/](artifacts/reports/figures/) | One SHAP overlay PNG per target — 120 files for N=120 |
-| [artifacts/reports/figures/single/](artifacts/reports/figures/) | Single-case demo outputs |
-| `assets/` | Numbered figures for the report (produced by the export tool) |
+| `artifacts/manifests/` | Frozen train/val/test splits (per-seed CSVs) |
+| `artifacts/checkpoints/` | Trained `.pt` and calibration `.json` keyed by run_id |
+| `artifacts/predictions/` | Per-split prediction CSVs with logits, probabilities, and labels |
+| `artifacts/logs/` | Run records, training history, XAI runtime status logs (`*_gradcam_status.json`, `*_shap_status.json`) |
+| `artifacts/reports/tables/` | Evaluation and XAI audit CSVs (see XAI audit artifacts table above) |
+| `artifacts/reports/figures/gradcam/` | One Grad-CAM overlay PNG per (target, layer) — 360 files for N=120 × 3 layers |
+| `artifacts/reports/figures/shap/` | One SHAP overlay PNG per target — 120 files for N=120 |
+| `artifacts/reports/figures/single/` | Single-case demo outputs |
+| `assets/` | Numbered figures for a quick demo zip (produced by the export tool) |
 
 ---
 

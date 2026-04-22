@@ -17,6 +17,9 @@ Icon?
 Icon\r
 ._*
 
+# MS Office temp / lock files (appear next to pptx/docx while they're open)
+~$*
+
 # Editors / IDEs
 .vscode/
 .idea/
@@ -29,7 +32,7 @@ Icon\r
 .venv/
 venv/
 
-# LaTeX build artefacts (keep the .tex source; exclude compiled/intermediate files)
+# LaTeX build artefacts — keep the final PDF and figure assets; exclude the TeX source (Overleaf is source of truth) and all intermediate build files
 src/report/*.aux
 src/report/*.log
 src/report/*.out
@@ -41,9 +44,7 @@ src/report/*.fls
 src/report/*.fdb_latexmk
 src/report/*.bbl
 src/report/*.blg
-src/report/*.pdf
-src/report/assets/
-src/report/
+src/report/*.tex
 
 # Dataset
 dataset/**/train_images/
@@ -57,8 +58,8 @@ dataset/**/*.tif
 dataset/**/*.tiff
 
 # Generated outputs
-artifacts/
-assets/
+/artifacts/
+/assets/
 
 # Local env files
 .env
