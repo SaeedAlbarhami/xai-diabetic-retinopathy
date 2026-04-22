@@ -49,7 +49,7 @@ The committed run was produced on the following machine:
 | Unified memory | 48 GB |
 | Operating system | macOS 26.4.1 (Build 25E253) |
 
-End-to-end runtime on this machine: ~60 min for one fresh training run, ~15 min for the XAI audit section. CUDA GPUs and CPU-only machines also work — see Device behaviour below.
+End-to-end runtime on this machine: approximately **1 hour** (range ~40 min – 1h 20 min) for one fresh training run, and approximately **15 min** (range ~10 min – 35 min) for the XAI audit section. The committed seed-1988 run logged **58.40 min** for training — use that as the nominal estimate, ±20 min depending on thermal state and background load. CUDA GPUs and CPU-only machines also work — see Device behaviour below.
 
 **Device auto-detection.** The pipeline auto-detects CUDA, MPS (Apple Silicon), or CPU via `_resolve_device` (in [src/data.py](src/data.py)) and `_resolve_xai_device` (in [src/xai_common.py](src/xai_common.py)). No manual device selection is needed.
 
@@ -104,7 +104,7 @@ The "Run Configuration" cell is the single control panel. All other cells read f
 | `SEED` | `1988` | Run seed. The committed checkpoint was trained with this seed. |
 | `EVAL_SPLIT` | `'test'` | Which split to evaluate and audit on. |
 | `RUN_CLEAN_BEFORE_START` | `False` | If `True`, wipes all artifacts before starting. **Leave False** unless you want a full rebuild. |
-| `FORCE_RETRAIN` | `False` | If `False`, the training cell reuses an existing checkpoint whose config signature matches. **Leave False** to avoid a 58-minute retrain. |
+| `FORCE_RETRAIN` | `False` | If `False`, the training cell reuses an existing checkpoint whose config signature matches. **Leave False** to avoid a full retrain (~1 hour, ±20 min on M3 Max MPS). |
 | `XAI_SAFE_MODE` | `False` | If `True`, the XAI audit uses smaller SHAP background / sample sizes and forces CPU execution. Flip to `True` only if you hit MPS/CUDA memory pressure. |
 | `SHOW_ADVANCED_XAI_AUDIT` | `False` | If `True`, the audit displays extra tables (correctness split, class-wise pass rate, discordant cases). |
 | `XAI_VIS_SAFE_MODE` | `False` | Controls the visual review grids. Flip on for smaller memory budget. |
@@ -118,11 +118,11 @@ The "Run Configuration" cell is the single control panel. All other cells read f
 | 2. Run Configuration | sets the control flags above | <1s | — |
 | 3. Optional Output Reset | wipes artifacts if `RUN_CLEAN_BEFORE_START=True` | <1s | — |
 | 4. Data Preparation | generates / reuses train/val/test manifests | ~5–10s | `artifacts/manifests/` |
-| 5. Model Fine-Tuning | reuses checkpoint if config signature matches; else trains from scratch | ~5s reused / ~60min fresh | `artifacts/checkpoints/` + calibration JSON |
-| 6. Core Evaluation | inference on the eval split, confusion matrix, per-class metrics, headline table, calibration | ~1–2min on MPS | `artifacts/predictions/`, `artifacts/reports/tables/` |
-| **7. Explainability Analysis** | Grad-CAM + SHAP audit at N=120 (24 per class), retinal-disc mask applied before metrics, then renders the continuous + threshold comparison tables. Gated advanced breakdown shown when `SHOW_ADVANCED_XAI_AUDIT=True`. | ~13–16 min on MPS at `shap_background_size=16` | `rq_xai_method_stats`, `rq_xai_pairwise`, `rq_xai_continuous`, `rq_xai_mask_ablation`, `rq_xai_per_class`, `rq1_gradcam`, `rq2_shap`, per-sample Grad-CAM / SHAP overlay PNGs |
-| 8. Visual Review | Grad-CAM + SHAP demo grids across target classes | ~3–5min | `gradcam_demo_grid.png`, `shap_demo_grid.png` |
-| 9. Single-Case Demo | detailed XAI panel for one fundus image | ~30s | `artifacts/reports/figures/single/` |
+| 5. Model Fine-Tuning | reuses checkpoint if config signature matches; else trains from scratch | ~5s reused / ~1 hour fresh (range 40 min – 1h 20 min) | `artifacts/checkpoints/` + calibration JSON |
+| 6. Core Evaluation | inference on the eval split, confusion matrix, per-class metrics, headline table, calibration | ~1–2 min on MPS | `artifacts/predictions/`, `artifacts/reports/tables/` |
+| **7. Explainability Analysis** | Grad-CAM + SHAP audit at N=120 (24 per class), retinal-disc mask applied before metrics, then renders the continuous + threshold comparison tables. Gated advanced breakdown shown when `SHOW_ADVANCED_XAI_AUDIT=True`. | ~15 min on MPS (range 10–35 min) at `shap_background_size=16` | `rq_xai_method_stats`, `rq_xai_pairwise`, `rq_xai_continuous`, `rq_xai_mask_ablation`, `rq_xai_per_class`, `rq1_gradcam`, `rq2_shap`, per-sample Grad-CAM / SHAP overlay PNGs |
+| 8. Visual Review | Grad-CAM + SHAP demo grids across target classes | ~3–5 min | `gradcam_demo_grid.png`, `shap_demo_grid.png` |
+| 9. Single-Case Demo | detailed XAI panel for one fundus image | ~30 s | `artifacts/reports/figures/single/` |
 
 #### Reuse semantics
 
