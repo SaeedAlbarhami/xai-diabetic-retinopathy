@@ -1,5 +1,7 @@
 # Explainable Diabetic Retinopathy Classification Pipeline
 
+## Brief Project Description
+
 An end-to-end reproducible pipeline for five-class diabetic retinopathy (DR) severity grading on the APTOS 2019 dataset, with post-hoc explainability via Grad-CAM and SHAP. Built as the ITPG708 final project.
 
 This README covers how to run the code and where outputs land. Experimental findings and statistical results live in [the project report](src/report/XAI_Final-ProjectReport.pdf).
@@ -13,7 +15,127 @@ This README covers how to run the code and where outputs land. Experimental find
 
 ---
 
-## Project Layout
+## Software Requirements
+
+Developed and tested against **Python 3.11** in a conda env named `itpg708`.
+
+Dependencies (pinned in [requirements.txt](requirements.txt)):
+
+- `torch==2.9.1`, `torchvision==0.24.1` — backbone + data loading
+- `captum==0.7.0` — Grad-CAM via `LayerGradCam`
+- `shap==0.47.2` — SHAP via `DeepExplainer`
+- `scipy>=1.11` — Wilcoxon signed-rank and paired t-tests for the continuous XAI analysis
+- `scikit-learn==1.6.1` — confusion matrix, macro/weighted metrics, QWK
+- `pandas==2.2.3`, `numpy==2.1.3`, `matplotlib==3.10.0`, `Pillow==11.1.0`, `PyYAML==6.0.2`
+
+---
+
+## Hardware Requirements
+
+The committed run was produced on the following machine:
+
+| Component | Specification |
+|---|---|
+| Model | MacBook Pro (Mac15,8) |
+| Chip | Apple M3 Max |
+| CPU cores | 16 (12 performance + 4 efficiency) |
+| GPU | Apple M3 Max integrated GPU (Metal 4, used via PyTorch MPS) |
+| Unified memory | 48 GB |
+| Operating system | macOS 26.4.1 (Build 25E253) |
+
+End-to-end runtime on this machine: ~60 min for one fresh training run, ~15 min for the XAI audit section. CUDA GPUs and CPU-only machines also work — see Device behaviour below.
+
+**Device auto-detection.** The pipeline auto-detects CUDA, MPS (Apple Silicon), or CPU via `_resolve_device` (in [src/data.py](src/data.py)) and `_resolve_xai_device` (in [src/xai_common.py](src/xai_common.py)). No manual device selection is needed.
+
+**Known device-specific behaviour:**
+
+- On **MPS**, `DataLoader` workers are forced to `num_workers=0` inside inference helpers ([src/train.py:689](src/train.py#L689), [src/train.py:751](src/train.py#L751)) because multi-process DataLoaders with MPS tensors can deadlock.
+- On **CUDA**, SHAP DeepExplainer has a CPU fallback path (`_should_retry_shap_on_cpu` in [src/xai_shap.py](src/xai_shap.py)) that triggers automatically on CUDA OOM.
+- On **CPU**, everything works but is ~5x slower.
+
+---
+
+## Dependencies and Installation Instructions
+
+From a fresh conda env:
+
+```bash
+conda create -n itpg708 python=3.11
+conda activate itpg708
+pip install -r requirements.txt
+```
+
+See [Software Requirements](#software-requirements) above for the full pinned dependency list and their roles.
+
+---
+
+## Step-by-Step Instructions
+
+### Install
+
+Follow the steps in [Dependencies and Installation Instructions](#dependencies-and-installation-instructions) above.
+
+### Build
+
+No explicit build step — this is a pure Python project. The build equivalent is the training run that produces the model checkpoint, covered under **Run the project** below (Section 5 of the notebook). All generated outputs (manifests, checkpoint, predictions, XAI tables, figures) are produced by running the notebook.
+
+### Run the project
+
+Open the notebook and execute top-to-bottom:
+
+```bash
+jupyter notebook notebooks/project_demo.ipynb
+```
+
+The notebook has two setup cells (Colab drive mount + imports) followed by numbered sections 1 through 9.
+
+#### Control flags (Section 2 "Run Configuration")
+
+The "Run Configuration" cell is the single control panel. All other cells read from these variables:
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `SEED` | `1988` | Run seed. The committed checkpoint was trained with this seed. |
+| `EVAL_SPLIT` | `'test'` | Which split to evaluate and audit on. |
+| `RUN_CLEAN_BEFORE_START` | `False` | If `True`, wipes all artifacts before starting. **Leave False** unless you want a full rebuild. |
+| `FORCE_RETRAIN` | `False` | If `False`, the training cell reuses an existing checkpoint whose config signature matches. **Leave False** to avoid a 58-minute retrain. |
+| `XAI_SAFE_MODE` | `False` | If `True`, the XAI audit uses smaller SHAP background / sample sizes and forces CPU execution. Flip to `True` only if you hit MPS/CUDA memory pressure. |
+| `SHOW_ADVANCED_XAI_AUDIT` | `False` | If `True`, the audit displays extra tables (correctness split, class-wise pass rate, discordant cases). |
+| `XAI_VIS_SAFE_MODE` | `False` | Controls the visual review grids. Flip on for smaller memory budget. |
+| `XAI_SINGLE_SAFE_MODE` | `False` | Controls the single-case demo. |
+
+#### What each section does
+
+| Section | What it does | Runtime with reuse | What it produces |
+|---|---|---|---|
+| 1. Environment Setup | adds project root to `sys.path` | <1s | — |
+| 2. Run Configuration | sets the control flags above | <1s | — |
+| 3. Optional Output Reset | wipes artifacts if `RUN_CLEAN_BEFORE_START=True` | <1s | — |
+| 4. Data Preparation | generates / reuses train/val/test manifests | ~5–10s | `artifacts/manifests/` |
+| 5. Model Fine-Tuning | reuses checkpoint if config signature matches; else trains from scratch | ~5s reused / ~60min fresh | `artifacts/checkpoints/` + calibration JSON |
+| 6. Core Evaluation | inference on the eval split, confusion matrix, per-class metrics, headline table, calibration | ~1–2min on MPS | `artifacts/predictions/`, `artifacts/reports/tables/` |
+| **7. Explainability Analysis** | Grad-CAM + SHAP audit at N=120 (24 per class), retinal-disc mask applied before metrics, then renders the continuous + threshold comparison tables. Gated advanced breakdown shown when `SHOW_ADVANCED_XAI_AUDIT=True`. | ~13–16 min on MPS at `shap_background_size=16` | `rq_xai_method_stats`, `rq_xai_pairwise`, `rq_xai_continuous`, `rq_xai_mask_ablation`, `rq_xai_per_class`, `rq1_gradcam`, `rq2_shap`, per-sample Grad-CAM / SHAP overlay PNGs |
+| 8. Visual Review | Grad-CAM + SHAP demo grids across target classes | ~3–5min | `gradcam_demo_grid.png`, `shap_demo_grid.png` |
+| 9. Single-Case Demo | detailed XAI panel for one fundus image | ~30s | `artifacts/reports/figures/single/` |
+
+#### Reuse semantics
+
+- **Manifests** are regenerated deterministically from the stratification seed every time. Fast but idempotent.
+- **Checkpoint reuse** is driven by `_checkpoint_config_signature(cfg)` in [src/train.py](src/train.py). If the current config hashes to the same signature as an existing checkpoint for the same seed, that checkpoint is reused and training returns in seconds. Change any training hyperparameter (loss, optimizer, epochs, lr, batch size, etc.) and the signature changes, triggering a fresh run.
+- **Predictions CSVs** are regenerated on every evaluation run to stay consistent with whatever checkpoint is loaded.
+- **XAI tables and figures** are always regenerated by Section 7. The pipeline does not auto-wipe the `gradcam/`, `shap/`, or `single/` figure directories between runs — manually clean them if you change `max_targets` or `seed` to avoid stale per-sample PNGs from a previous configuration.
+
+#### If Section 7 fails with out-of-memory
+
+1. In the run configuration cell, set `XAI_SAFE_MODE = True`. This forces the audit onto CPU and caps SHAP at 24 background / 24 samples.
+2. Re-run from the run configuration cell. All upstream work (manifests, training, core evaluation) is cached.
+3. If it still fails, lower `shap_background_size` and `shap_max_samples` in [configs/base.yaml](configs/base.yaml). Current defaults: `shap_max_samples: 120`, `shap_background_size: 16`, `max_targets: 120`, `attribution_mask_radius_ratio: 0.50`.
+
+The pipeline has an automatic CPU fallback (`_should_retry_shap_on_cpu` in [src/xai_shap.py](src/xai_shap.py)) that catches CUDA OOM, MPS OOM, and SHAP in-place-view errors and retries the affected sample on CPU — slower but reliable.
+
+---
+
+## Project Structure
 
 ```
 ITPG708Project/
@@ -108,30 +230,32 @@ L5 (public facade):                          xai.py
 
 ---
 
-## Setup
+## Dataset Information
 
-### 1. Python environment
+### Source
 
-Developed and tested against Python 3.11 in a conda env named `itpg708`. From a fresh env:
+This project uses the **APTOS 2019 Blindness Detection** dataset (Asia Pacific Tele-Ophthalmology Society / Kaggle).
 
-```bash
-conda create -n itpg708 python=3.11
-conda activate itpg708
-pip install -r requirements.txt
-```
+Kaggle page: <https://www.kaggle.com/c/aptos2019-blindness-detection>. A free Kaggle account and acceptance of the competition's data-use rules are required.
 
-Dependencies (pinned in [requirements.txt](requirements.txt)):
+Classes use the International Clinical Diabetic Retinopathy (ICDR) scale:
 
-- `torch==2.9.1`, `torchvision==0.24.1` — backbone + data loading
-- `captum==0.7.0` — Grad-CAM via `LayerGradCam`
-- `shap==0.47.2` — SHAP via `DeepExplainer`
-- `scipy>=1.11` — Wilcoxon signed-rank and paired t-tests for the continuous XAI analysis
-- `scikit-learn==1.6.1` — confusion matrix, macro/weighted metrics, QWK
-- `pandas==2.2.3`, `numpy==2.1.3`, `matplotlib==3.10.0`, `Pillow==11.1.0`, `PyYAML==6.0.2`
+| Code | Label |
+|---|---|
+| 0 | No_DR |
+| 1 | Mild |
+| 2 | Moderate |
+| 3 | Severe |
+| 4 | Proliferate_DR |
 
-### 2. Dataset
+See [dataset/README.md](dataset/README.md) for additional dataset details.
 
-See [dataset/README.md](dataset/README.md) for the dataset used and expected local folder layout.
+### Format
+
+| File | Format | Contents |
+|---|---|---|
+| `train_1.csv`, `valid.csv`, `test.csv` | CSV, UTF-8 | Two columns: `id_code` (string, matches PNG filename without extension) and `diagnosis` (integer, 0–4 per ICDR grade above). |
+| `train_images/*.png`, `val_images/*.png`, `test_images/*.png` | 8-bit RGB PNG | One image per CSV row, named `<id_code>.png`. Native resolutions vary (typically ~3000×2000); the pipeline resizes every image to 380×380 during preprocessing. |
 
 Download APTOS 2019 from Kaggle and place it under `dataset/aptos2019/` with paths matching [configs/base.yaml](configs/base.yaml):
 
@@ -145,109 +269,7 @@ dataset/aptos2019/
 └── test_images/             # test image PNGs
 ```
 
-### 3. Hardware requirements
-
-The committed run was produced on the following machine:
-
-| Component | Specification |
-|---|---|
-| Model | MacBook Pro (Mac15,8) |
-| Chip | Apple M3 Max |
-| CPU cores | 16 (12 performance + 4 efficiency) |
-| GPU | Apple M3 Max integrated GPU (Metal 4, used via PyTorch MPS) |
-| Unified memory | 48 GB |
-| Operating system | macOS 26.4.1 (Build 25E253) |
-
-End-to-end runtime on this machine: ~60 min for one fresh training run, ~15 min for the XAI audit section. CUDA GPUs and CPU-only machines also work — see Device behaviour below.
-
-### 4. Device
-
-The pipeline auto-detects CUDA, MPS (Apple Silicon), or CPU via `_resolve_device` (in [src/data.py](src/data.py)) and `_resolve_xai_device` (in [src/xai_common.py](src/xai_common.py)). No manual device selection is needed.
-
-**Known device-specific behaviour:**
-
-- On **MPS**, `DataLoader` workers are forced to `num_workers=0` inside inference helpers ([src/train.py:689](src/train.py#L689), [src/train.py:751](src/train.py#L751)) because multi-process DataLoaders with MPS tensors can deadlock.
-- On **CUDA**, SHAP DeepExplainer has a CPU fallback path (`_should_retry_shap_on_cpu` in [src/xai_shap.py](src/xai_shap.py)) that triggers automatically on CUDA OOM.
-- On **CPU**, everything works but is ~5x slower.
-
----
-
-## How to run
-
-Open the notebook and execute top-to-bottom:
-
-```bash
-jupyter notebook notebooks/project_demo.ipynb
-```
-
-The notebook has two setup cells (Colab drive mount + imports) followed by numbered sections 1 through 9.
-
-### Control flags (Section 2 "Run Configuration")
-
-The "Run Configuration" cell is the single control panel. All other cells read from these variables:
-
-| Flag | Default | Purpose |
-|---|---|---|
-| `SEED` | `1988` | Run seed. The committed checkpoint was trained with this seed. |
-| `EVAL_SPLIT` | `'test'` | Which split to evaluate and audit on. |
-| `RUN_CLEAN_BEFORE_START` | `False` | If `True`, wipes all artifacts before starting. **Leave False** unless you want a full rebuild. |
-| `FORCE_RETRAIN` | `False` | If `False`, the training cell reuses an existing checkpoint whose config signature matches. **Leave False** to avoid a 58-minute retrain. |
-| `XAI_SAFE_MODE` | `False` | If `True`, the XAI audit uses smaller SHAP background / sample sizes and forces CPU execution. Flip to `True` only if you hit MPS/CUDA memory pressure. |
-| `SHOW_ADVANCED_XAI_AUDIT` | `False` | If `True`, the audit displays extra tables (correctness split, class-wise pass rate, discordant cases). |
-| `XAI_VIS_SAFE_MODE` | `False` | Controls the visual review grids. Flip on for smaller memory budget. |
-| `XAI_SINGLE_SAFE_MODE` | `False` | Controls the single-case demo. |
-
-### What each section does
-
-| Section | What it does | Runtime with reuse | What it produces |
-|---|---|---|---|
-| 1. Environment Setup | adds project root to `sys.path` | <1s | — |
-| 2. Run Configuration | sets the control flags above | <1s | — |
-| 3. Optional Output Reset | wipes artifacts if `RUN_CLEAN_BEFORE_START=True` | <1s | — |
-| 4. Data Preparation | generates / reuses train/val/test manifests | ~5–10s | `artifacts/manifests/` |
-| 5. Model Fine-Tuning | reuses checkpoint if config signature matches; else trains from scratch | ~5s reused / ~60min fresh | `artifacts/checkpoints/` + calibration JSON |
-| 6. Core Evaluation | inference on the eval split, confusion matrix, per-class metrics, headline table, calibration | ~1–2min on MPS | `artifacts/predictions/`, `artifacts/reports/tables/` |
-| **7. Explainability Analysis** | Grad-CAM + SHAP audit at N=120 (24 per class), retinal-disc mask applied before metrics, then renders the continuous + threshold comparison tables. Gated advanced breakdown shown when `SHOW_ADVANCED_XAI_AUDIT=True`. | ~13–16 min on MPS at `shap_background_size=16` | `rq_xai_method_stats`, `rq_xai_pairwise`, `rq_xai_continuous`, `rq_xai_mask_ablation`, `rq_xai_per_class`, `rq1_gradcam`, `rq2_shap`, per-sample Grad-CAM / SHAP overlay PNGs |
-| 8. Visual Review | Grad-CAM + SHAP demo grids across target classes | ~3–5min | `gradcam_demo_grid.png`, `shap_demo_grid.png` |
-| 9. Single-Case Demo | detailed XAI panel for one fundus image | ~30s | `artifacts/reports/figures/single/` |
-
-### Reuse semantics
-
-- **Manifests** are regenerated deterministically from the stratification seed every time. Fast but idempotent.
-- **Checkpoint reuse** is driven by `_checkpoint_config_signature(cfg)` in [src/train.py](src/train.py). If the current config hashes to the same signature as an existing checkpoint for the same seed, that checkpoint is reused and training returns in seconds. Change any training hyperparameter (loss, optimizer, epochs, lr, batch size, etc.) and the signature changes, triggering a fresh run.
-- **Predictions CSVs** are regenerated on every evaluation run to stay consistent with whatever checkpoint is loaded.
-- **XAI tables and figures** are always regenerated by Section 7. The pipeline does not auto-wipe the `gradcam/`, `shap/`, or `single/` figure directories between runs — manually clean them if you change `max_targets` or `seed` to avoid stale per-sample PNGs from a previous configuration.
-
-### If Section 7 fails with out-of-memory
-
-1. In the run configuration cell, set `XAI_SAFE_MODE = True`. This forces the audit onto CPU and caps SHAP at 24 background / 24 samples.
-2. Re-run from the run configuration cell. All upstream work (manifests, training, core evaluation) is cached.
-3. If it still fails, lower `shap_background_size` and `shap_max_samples` in [configs/base.yaml](configs/base.yaml). Current defaults: `shap_max_samples: 120`, `shap_background_size: 16`, `max_targets: 120`, `attribution_mask_radius_ratio: 0.50`.
-
-The pipeline has an automatic CPU fallback (`_should_retry_shap_on_cpu` in [src/xai_shap.py](src/xai_shap.py)) that catches CUDA OOM, MPS OOM, and SHAP in-place-view errors and retries the affected sample on CPU — slower but reliable.
-
----
-
-## Sample input and expected output
-
-**Input.** One 8-bit RGB fundus photograph (PNG, any native resolution; APTOS 2019 images are typically ~3000×2000). Example path: `dataset/aptos2019/test_images/1ae8c165fd53.png`.
-
-**Pipeline output for a single image.** For every test image the pipeline emits:
-
-1. **Predicted DR grade ŷ ∈ {No_DR, Mild, Moderate, Severe, Proliferative_DR}** and softmax confidence p(ŷ) (temperature-calibrated).
-2. **Grad-CAM heatmap** over the retinal disc, showing which regions drove the prediction.
-3. **SHAP attribution map** (per-class, signed), with positive contributions in red and negative in blue.
-4. Per-sample XAI metrics (border ratio, retina ratio, faithfulness Δ_k, AOPC) logged to `artifacts/reports/tables/rq1_gradcam_*.csv` / `rq2_shap_*.csv`.
-
-**Example (single-case Grad-CAM class grid, one No_DR image):**
-
-![Single-case Grad-CAM class grid](src/report/assets/figure11a_gradcam_class_grid.png)
-
-**Aggregate output across the 120-image audit:** per-class Grad-CAM demo grid and SHAP demo grid (Section 8 of the notebook), plus the continuous-metric comparison in `rq_xai_continuous_*.csv`. The committed run reaches accuracy 82.2% and quadratic weighted kappa 0.896 on the 550-image APTOS 2019 test split — see [the project report](src/report/XAI_Final-ProjectReport.pdf) for the full result tables.
-
----
-
-## Preprocessing pipeline
+### Preprocessing steps
 
 Every fundus image goes through a four-stage preprocessing pipeline before the model sees it, implemented in [src/data.py:856-890](src/data.py#L856-L890) (`_apply_fundus_preprocessing`):
 
@@ -266,6 +288,25 @@ raw fundus  →  Resize 380²  →  CLAHE  →  Ben-Graham  →  Circle crop  �
 A 5-panel worked example is generated by [tools/export_preprocessing_steps.py](tools/export_preprocessing_steps.py) and embedded in the report as `figure12_preprocessing_example.png`:
 
 ![Preprocessing pipeline](src/report/assets/figure12_preprocessing_example.png)
+
+---
+
+## Sample Input and Expected Output
+
+**Input.** One 8-bit RGB fundus photograph (PNG, any native resolution; APTOS 2019 images are typically ~3000×2000). Example path: `dataset/aptos2019/test_images/1ae8c165fd53.png`.
+
+**Pipeline output for a single image.** For every test image the pipeline emits:
+
+1. **Predicted DR grade ŷ ∈ {No_DR, Mild, Moderate, Severe, Proliferative_DR}** and softmax confidence p(ŷ) (temperature-calibrated).
+2. **Grad-CAM heatmap** over the retinal disc, showing which regions drove the prediction.
+3. **SHAP attribution map** (per-class, signed), with positive contributions in red and negative in blue.
+4. Per-sample XAI metrics (border ratio, retina ratio, faithfulness Δ_k, AOPC) logged to `artifacts/reports/tables/rq1_gradcam_*.csv` / `rq2_shap_*.csv`.
+
+**Example (single-case Grad-CAM class grid, one No_DR image):**
+
+![Single-case Grad-CAM class grid](src/report/assets/figure11a_gradcam_class_grid.png)
+
+**Aggregate output across the 120-image audit:** per-class Grad-CAM demo grid and SHAP demo grid (Section 8 of the notebook), plus the continuous-metric comparison in `rq_xai_continuous_*.csv`. The committed run reaches accuracy 82.2% and quadratic weighted kappa 0.896 on the 550-image APTOS 2019 test split — see [the project report](src/report/XAI_Final-ProjectReport.pdf) for the full result tables.
 
 ---
 
