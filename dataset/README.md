@@ -2,7 +2,7 @@
 
 This project uses the **APTOS 2019 Blindness Detection** dataset (Asia Pacific Tele-Ophthalmology Society / Kaggle), for five-class diabetic retinopathy severity grading on the International Clinical Diabetic Retinopathy (ICDR) scale.
 
-**Source.** Kaggle competition: <https://www.kaggle.com/c/aptos2019-blindness-detection>. Download requires a free Kaggle account and acceptance of the competition's data-use rules.
+**Source.** Kaggle competition: <https://www.kaggle.com/c/aptos2019-blindness-detection>. 
 
 **Classes.** The five ICDR grades used throughout this project are: `0 = No_DR`, `1 = Mild`, `2 = Moderate`, `3 = Severe`, `4 = Proliferate_DR`.
 
