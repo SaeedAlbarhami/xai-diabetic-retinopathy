@@ -1,0 +1,17 @@
+{
+  "status": "success",
+  "seed": 1988,
+  "run_id": "dr_efficientnet_b4_aptos2019_85-15-v10_seed1988_20260316T0607_9eee8e",
+  "split": "test",
+  "mode": "subset",
+  "samples": 120,
+  "attempted_device": "mps",
+  "final_device": "mps",
+  "fallback_used": false,
+  "error_primary": "",
+  "pass_rule_border_ratio_max": 0.25,
+  "pass_rule_faith_delta_k20_min": 0.1,
+  "evaluation_scope": "all_confidence; max_targets=120",
+  "shared_targets_enforced": true,
+  "target_rows": 120
+}

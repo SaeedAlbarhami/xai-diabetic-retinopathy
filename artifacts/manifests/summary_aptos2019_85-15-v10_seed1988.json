@@ -1,0 +1,41 @@
+{
+  "protocol": "benchmark",
+  "seed": 1988,
+  "full_data_rows": 3662,
+  "train_pool_rows": 3112,
+  "train_split_rows": 2800,
+  "val_split_rows": 312,
+  "test_full_rows": 550,
+  "profile_test_ratio": 0.15,
+  "profile_val_ratio_within_train": 0.1,
+  "realized_train_ratio": 0.764609503003823,
+  "realized_val_ratio": 0.085199344620426,
+  "realized_test_ratio": 0.15019115237575095,
+  "train_val_disjoint": true,
+  "train_test_disjoint": true,
+  "val_test_disjoint": true,
+  "source_counts": {
+    "aptos2019": 3662
+  },
+  "class_counts_train": {
+    "0": 1380,
+    "1": 282,
+    "2": 764,
+    "3": 148,
+    "4": 226
+  },
+  "class_counts_val": {
+    "0": 154,
+    "1": 32,
+    "2": 85,
+    "3": 16,
+    "4": 25
+  },
+  "class_counts_test": {
+    "0": 271,
+    "1": 56,
+    "2": 150,
+    "3": 29,
+    "4": 44
+  }
+}

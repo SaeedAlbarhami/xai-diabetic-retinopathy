@@ -1,0 +1,16 @@
+{
+  "seed": 1988,
+  "run_id": "dr_efficientnet_b4_aptos2019_85-15-v10_seed1988_20260316T0607_9eee8e",
+  "backbone": "efficientnet_b4",
+  "split_policy": "aptos2019_85-15-v10",
+  "checkpoint_path": "/Users/sthabit/My Drive/ITPG708Project/artifacts/checkpoints/dr_efficientnet_b4_aptos2019_85-15-v10_seed1988_20260316T0607_9eee8e.pt",
+  "updated_at": "2026-04-27T13:06:04",
+  "status": "trained",
+  "train_started_at": "2026-03-16T06:07:34",
+  "train_finished_at": "2026-03-16T07:05:58",
+  "train_duration_seconds": 3503.8221267079934,
+  "train_duration_minutes": 58.39703544513323,
+  "epochs_ran": 15,
+  "best_val_macro_f1": 0.6801457818945996,
+  "train_history_path": "/Users/sthabit/My Drive/ITPG708Project/artifacts/logs/dr_efficientnet_b4_aptos2019_85-15-v10_seed1988_20260316T0607_9eee8e_train_history.json"
+}

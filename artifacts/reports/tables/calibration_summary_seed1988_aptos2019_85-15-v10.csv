@@ -1,0 +1,2 @@
+seed,run_id,n_bins,interpolate_empty_bins,temperature,ece_before,ece_after,ece_delta
+1988,dr_efficientnet_b4_aptos2019_85-15-v10_seed1988_20260316T0607_9eee8e,10,0,0.7434525489807129,0.07898792748649917,0.04398277927285587,-0.035005148213643304
