@@ -1,0 +1,50 @@
+{
+  "class_id": 0,
+  "image_id": "4704dbb59536",
+  "true_class": 0,
+  "true_class_name": "No DR",
+  "true_label": "No_DR",
+  "pred_class": 0,
+  "pred_class_name": "No DR",
+  "pred_label": "No_DR",
+  "confidence": 0.999954104423523,
+  "probabilities": [
+    0.999954104423523,
+    4.2841937101911753e-05,
+    2.3600805434398353e-06,
+    1.666206799200154e-07,
+    5.195683456804545e-07
+  ],
+  "narrative": [
+    "Predicted DR grade: No_DR (0) with probability 1.000.",
+    "Next most likely alternative: Mild (0.000).",
+    "Suggested triage framing: TBD",
+    "Confidence note: TBD",
+    "How to use maps: TBD",
+    "Clinical safeguard: TBD"
+  ],
+  "shap_available": true,
+  "fundus_url": "static/cases/case_0/fundus.png?v=1637136652",
+  "gradcam_url": "static/cases/case_0/gradcam.png?v=1777280553",
+  "shap_url": "static/cases/case_0/shap.png?v=1777280582",
+  "xai_metrics": {
+    "gradcam": {
+      "border_ratio": 0.15436866879463196,
+      "retina_ratio": 0.871699869632721,
+      "faith_delta_k20": 0.7614241987466812,
+      "aopc_delta": 0.5716532937561473,
+      "passes_rule": true
+    },
+    "shap": {
+      "border_ratio": 0.18240951001644135,
+      "retina_ratio": 0.8543818593025208,
+      "faith_delta_k20": 0.5232517123222351,
+      "aopc_delta": 0.43165429433186847,
+      "passes_rule": true
+    },
+    "rule": {
+      "border_ratio_max": 0.25,
+      "faith_delta_k20_min": 0.1
+    }
+  }
+}

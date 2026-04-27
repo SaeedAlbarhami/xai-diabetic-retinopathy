@@ -1,0 +1,50 @@
+{
+  "class_id": 3,
+  "image_id": "4fecf87184e6",
+  "true_class": 3,
+  "true_class_name": "Severe",
+  "true_label": "Severe",
+  "pred_class": 3,
+  "pred_class_name": "Severe",
+  "pred_label": "Severe",
+  "confidence": 0.6387940645217896,
+  "probabilities": [
+    1.1426631317590363e-05,
+    0.0061548007652163506,
+    0.30498331785202026,
+    0.6387940645217896,
+    0.05005645006895065
+  ],
+  "narrative": [
+    "Predicted DR grade: Severe (3) with probability 0.639.",
+    "Next most likely alternative: Moderate (0.305).",
+    "Suggested triage framing: TBD",
+    "Confidence note: TBD",
+    "How to use maps: TBD",
+    "Clinical safeguard: TBD"
+  ],
+  "shap_available": true,
+  "fundus_url": "static/cases/case_3/fundus.png?v=1637136684",
+  "gradcam_url": "static/cases/case_3/gradcam.png?v=1777280720",
+  "shap_url": "static/cases/case_3/shap.png?v=1777280738",
+  "xai_metrics": {
+    "gradcam": {
+      "border_ratio": 0.08255694806575775,
+      "retina_ratio": 0.9212310910224915,
+      "faith_delta_k20": 0.19666901230812073,
+      "aopc_delta": 0.1666180690129598,
+      "passes_rule": true
+    },
+    "shap": {
+      "border_ratio": 0.24630169570446014,
+      "retina_ratio": 0.7818784713745117,
+      "faith_delta_k20": 0.2681981325149536,
+      "aopc_delta": 0.1940440833568573,
+      "passes_rule": true
+    },
+    "rule": {
+      "border_ratio_max": 0.25,
+      "faith_delta_k20_min": 0.1
+    }
+  }
+}
