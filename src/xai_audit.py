@@ -463,7 +463,11 @@ def run_xai_analysis(
         xai_target_df = xai_target_df.head(max_samples).copy()
     xai_target_df = xai_target_df.reset_index(drop=True)
 
-    xai_targets_path = Path(conf["paths"]["tables_dir"]) / f"xai_targets_seed{seed}_{split}.csv"
+    tables_dir = Path(conf["paths"]["tables_dir"])
+    def _xai_csv(stem: str) -> Path:
+        return tables_dir / f"{stem}_seed{seed}_{split}.csv"
+
+    xai_targets_path = _xai_csv("xai_targets")
     xai_target_df.to_csv(xai_targets_path, index=False)
 
     if high_conf_thr > 0.0:
@@ -652,7 +656,7 @@ def run_xai_analysis(
             selected_layer = ranked_scores[0][0]
         grad_rows = layer_rows.get(selected_layer, [])
 
-        layer_summary_path = Path(conf["paths"]["tables_dir"]) / f"gradcam_layer_selection_seed{seed}_{split}.csv"
+        layer_summary_path = _xai_csv("gradcam_layer_selection")
         pd.DataFrame(
             layer_scores,
             columns=["gradcam_layer", "composite_score", "mean_aopc_delta", "mean_border_ratio", "n_rows"],
@@ -707,7 +711,7 @@ def run_xai_analysis(
             "aopc_pass",
         ],
     )
-    rq1_path = Path(conf["paths"]["tables_dir"]) / f"rq1_gradcam_seed{seed}_{split}.csv"
+    rq1_path = _xai_csv("rq1_gradcam")
     rq1_df.to_csv(rq1_path, index=False)
 
     shap_rows: list[dict[str, Any]] = []
@@ -928,7 +932,7 @@ def run_xai_analysis(
             "aopc_pass",
         ],
     )
-    rq2_path = Path(conf["paths"]["tables_dir"]) / f"rq2_shap_seed{seed}_{split}.csv"
+    rq2_path = _xai_csv("rq2_shap")
     rq2_df.to_csv(rq2_path, index=False)
 
     coverage_rows: list[dict[str, Any]] = []
@@ -945,7 +949,7 @@ def run_xai_analysis(
             }
         )
     coverage_df = pd.DataFrame(coverage_rows, columns=["sample_id", "selected_for_xai", "gradcam_done", "shap_done"])
-    coverage_path = Path(conf["paths"]["tables_dir"]) / f"xai_target_coverage_seed{seed}_{split}.csv"
+    coverage_path = _xai_csv("xai_target_coverage")
     coverage_df.to_csv(coverage_path, index=False)
     if len(coverage_df):
         grad_missing = int((coverage_df["gradcam_done"] == 0).sum())
@@ -981,7 +985,7 @@ def run_xai_analysis(
         ),
     ]
     method_stats_df = pd.DataFrame(method_stats_rows)
-    method_stats_path = Path(conf["paths"]["tables_dir"]) / f"rq_xai_method_stats_seed{seed}_{split}.csv"
+    method_stats_path = _xai_csv("rq_xai_method_stats")
     method_stats_df.to_csv(method_stats_path, index=False)
 
     class_names = [str(x) for x in conf.get("data", {}).get("label_order", [])]
@@ -992,7 +996,7 @@ def run_xai_analysis(
         ],
         ignore_index=True,
     )
-    pass_by_correctness_path = Path(conf["paths"]["tables_dir"]) / f"rq_xai_pass_by_correctness_seed{seed}_{split}.csv"
+    pass_by_correctness_path = _xai_csv("rq_xai_pass_by_correctness")
     pass_by_correctness_df.to_csv(pass_by_correctness_path, index=False)
 
     pass_by_class_df = pd.concat(
@@ -1002,18 +1006,18 @@ def run_xai_analysis(
         ],
         ignore_index=True,
     )
-    pass_by_class_path = Path(conf["paths"]["tables_dir"]) / f"rq_xai_pass_by_class_seed{seed}_{split}.csv"
+    pass_by_class_path = _xai_csv("rq_xai_pass_by_class")
     pass_by_class_df.to_csv(pass_by_class_path, index=False)
 
     pairwise_df = _build_xai_pairwise_stats(rq1_df=rq1_df, rq2_df=rq2_df)
-    pairwise_path = Path(conf["paths"]["tables_dir"]) / f"rq_xai_pairwise_seed{seed}_{split}.csv"
+    pairwise_path = _xai_csv("rq_xai_pairwise")
     pairwise_df.to_csv(pairwise_path, index=False)
 
     continuous_df = _build_xai_continuous_stats(rq1_df=rq1_df, rq2_df=rq2_df)
-    continuous_path = Path(conf["paths"]["tables_dir"]) / f"rq_xai_continuous_seed{seed}_{split}.csv"
+    continuous_path = _xai_csv("rq_xai_continuous")
     continuous_df.to_csv(continuous_path, index=False)
 
-    proto_stub_path = Path(conf["paths"]["tables_dir"]) / f"protopnet_stub_seed{seed}_{split}.csv"
+    proto_stub_path = _xai_csv("protopnet_stub")
     pd.DataFrame([{"method": "ProtoPNetLite", "status": "planned_future_phase", "reason": "Planned future extension"}]).to_csv(proto_stub_path, index=False)
 
     return {
