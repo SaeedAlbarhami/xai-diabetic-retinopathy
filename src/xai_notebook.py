@@ -84,13 +84,11 @@ def notebook_run_xai(
         if latest_payload:
             run_id = str(latest_payload.get("run_id", ""))
 
-    pred_primary = (
+    predictions_path = (
         Path(conf["paths"]["predictions_dir"]) / f"{run_id}_{split_key}_predictions.csv"
         if run_id
         else Path("")
     )
-    pred_alias = Path(conf["paths"]["predictions_dir"]) / f"predictions_seed{int(seed)}_{split_key}.csv"
-    predictions_path = pred_primary if pred_primary.exists() else pred_alias
     predictions_df = pd.read_csv(predictions_path) if predictions_path.exists() else pd.DataFrame()
 
     return {

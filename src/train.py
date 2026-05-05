@@ -161,7 +161,6 @@ def _classification_metrics(df: pd.DataFrame, num_classes: int) -> tuple[dict[st
     sensitivity = np.divide(tp, tp + fn, out=np.zeros_like(tp), where=(tp + fn) > 0)
     specificity = np.divide(tn, tn + fp, out=np.zeros_like(tn), where=(tn + fp) > 0)
 
-    # Sensitivity is recall in one-vs-rest; we expose both for report readability.
     metrics["sensitivity_macro"] = float(np.mean(sensitivity))
     metrics["specificity_macro"] = float(np.mean(specificity))
     return metrics, pd.DataFrame(cm.astype(int))
@@ -1254,7 +1253,6 @@ def run_split_inference(cfg: str | Path | dict[str, Any], seed: int = 1988, spli
         temperature=temperature,
     )
 
-    # Contract order
     ordered_cols = [
         "sample_id",
         "true_class",
@@ -1270,7 +1268,6 @@ def run_split_inference(cfg: str | Path | dict[str, Any], seed: int = 1988, spli
         "image_path",
     ]
     pred_df = pred_df[ordered_cols]
-
     out = _predictions_path_for_run_id(conf, run_id, split)
     pred_df.to_csv(out, index=False)
     _save_latest_run_record(conf, seed=seed, run_id=run_id, checkpoint_path=ckpt_path)
@@ -1400,9 +1397,6 @@ def notebook_run_training(
     run_id = str(latest_payload.get("run_id", Path(checkpoint_path).stem))
 
     history_path = _train_history_log_path(conf, run_id)
-    if not history_path.exists():
-        fallback_history = Path(conf["paths"]["logs_dir"]) / f"train_history_seed{int(seed)}.json"
-        history_path = fallback_history if fallback_history.exists() else history_path
     history = _load_json(history_path) if history_path.exists() else {}
 
     history_fig: plt.Figure | None = None
