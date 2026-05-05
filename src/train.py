@@ -471,21 +471,6 @@ def _find_matching_checkpoint_by_signature(
     return None
 
 
-def _checkpoint_path(conf: dict[str, Any], seed: int) -> Path:
-    ckpt, _ = _resolve_checkpoint_and_run_id(conf, seed=seed, checkpoint=None, require_existing=True)
-    return ckpt
-
-
-def _calibration_path(conf: dict[str, Any], seed: int) -> Path:
-    _, run_id = _resolve_checkpoint_and_run_id(conf, seed=seed, checkpoint=None, require_existing=True)
-    return _calibration_path_for_run_id(conf, run_id)
-
-
-def _predictions_path(conf: dict[str, Any], seed: int, split: str) -> Path:
-    _, run_id = _resolve_checkpoint_and_run_id(conf, seed=seed, checkpoint=None, require_existing=True)
-    return _predictions_path_for_run_id(conf, run_id, split)
-
-
 def _run_id_from_predictions_path(predictions_path: str | Path, split: str) -> str:
     stem = Path(predictions_path).stem
     suffix = f"_{split}_predictions"
