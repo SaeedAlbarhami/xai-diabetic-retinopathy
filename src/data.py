@@ -1,67 +1,23 @@
-"""Data loading and preprocessing module.
-
-Handles the APTOS 2019 benchmark split (seed 1988 -> 2,800 train / 312 val /
-550 test), the four-stage fundus preprocessing pipeline (resize -> CLAHE ->
-Ben-Graham -> circle crop -> ImageNet normalisation), backbone construction
-(EfficientNet-B4, ResNet-50, ViT-B/16), and the data-overview utilities that
-produce the class-distribution figures used in the report.
-
-Main entry points used by the notebook:
-    load_project_config()           -- YAML loader for configs/base.yaml
-    notebook_prepare_data_overview()-- build manifests + split/class figures
-"""
+"""APTOS 2019 data loading, manifest creation, fundus preprocessing, and overview figures."""
 from __future__ import annotations
 
-import copy
 import json
 import os
 import random
 import shutil
-import types
-import warnings
-import hashlib
-import math
-import time
-import gc
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import matplotlib.pyplot as plt
-import matplotlib.gridspec as gridspec
-import matplotlib.patches as mpatches
 import numpy as np
 import pandas as pd
 from PIL import Image
 import cv2
-from sklearn.metrics import (
-    accuracy_score,
-    cohen_kappa_score,
-    confusion_matrix,
-    f1_score,
-    precision_score,
-    recall_score,
-    roc_auc_score,
-)
 from sklearn.model_selection import train_test_split
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
+from torch.utils.data import Dataset
 import torchvision.transforms as T
-from torchvision.models import EfficientNet_B4_Weights, ResNet50_Weights, ViT_B_16_Weights, efficientnet_b4, resnet50, vit_b_16
-from torchvision.models.efficientnet import FusedMBConv, MBConv
-from torchvision.models.resnet import BasicBlock, Bottleneck
-
-
-
 import yaml
-
-
-# -----------------------------
-# Config + common utils
-# -----------------------------
-
 
 
 _REQUIRED_PATH_KEYS = [
@@ -281,87 +237,6 @@ def _parse_aptos_csv(
     return pd.DataFrame(rows)
 
 
-def _parse_roboflow_classes_csv(
-    classes_csv: str | Path,
-    image_dir: str | Path,
-    label_order: list[str],
-    source_name: str,
-    source_dataset: str = "roboflow",
-) -> pd.DataFrame:
-    csv_file = Path(classes_csv)
-    image_root = Path(image_dir)
-
-    if not csv_file.exists():
-        raise FileNotFoundError(f"Roboflow classes CSV not found: {csv_file}")
-    if not image_root.exists():
-        raise FileNotFoundError(f"Roboflow image dir not found: {image_root}")
-
-    df = pd.read_csv(csv_file)
-    if "filename" not in df.columns:
-        raise ValueError(f"Roboflow classes CSV must include filename column: {csv_file}")
-
-    class_cols = [c for c in df.columns if str(c).strip().lower() != "filename"]
-    if not class_cols:
-        raise ValueError(f"No class columns found in Roboflow classes CSV: {csv_file}")
-
-    label_token_to_id = {_normalize_label_token(name): idx for idx, name in enumerate(label_order)}
-    col_to_class_id: dict[str, int] = {}
-    unknown_cols: list[str] = []
-    for col in class_cols:
-        token = _normalize_label_token(col)
-        if token in label_token_to_id:
-            col_to_class_id[col] = int(label_token_to_id[token])
-        else:
-            unknown_cols.append(str(col))
-    if unknown_cols:
-        raise ValueError(
-            f"Roboflow class columns not found in label_order: {unknown_cols}. "
-            f"label_order={label_order}"
-        )
-
-    rows: list[dict[str, Any]] = []
-    for row_idx, row in df.iterrows():
-        filename = str(row["filename"]).strip()
-        image_path = image_root / filename
-        if not image_path.exists():
-            raise FileNotFoundError(f"Missing Roboflow image file: {image_path}")
-
-        active_cols: list[str] = []
-        for col in class_cols:
-            try:
-                val = int(round(float(row[col])))
-            except (TypeError, ValueError):
-                val = 0
-            if val == 1:
-                active_cols.append(col)
-        if len(active_cols) != 1:
-            raise ValueError(
-                f"Expected exactly one active class for row={row_idx}, filename={filename}, "
-                f"but found {len(active_cols)} active columns: {active_cols}"
-            )
-
-        active_col = active_cols[0]
-        class_id = int(col_to_class_id[active_col])
-        class_name = _class_name_from_id(class_id, label_order)
-        patient_token = filename.split(".rf.")[0]
-
-        rows.append(
-            {
-                "sample_id": f"{source_name}_{patient_token}_{int(row_idx)}",
-                "patient_id": f"rf::{patient_token}",
-                "split": source_name,
-                "filename": filename,
-                "image_path": str(image_path),
-                "class_id": int(class_id),
-                "class_name": class_name,
-                "laterality": _infer_laterality(filename),
-                "source_dataset": str(source_dataset),
-            }
-        )
-
-    return pd.DataFrame(rows)
-
-
 def _load_aptos_full_pool(conf: dict[str, Any], label_order: list[str]) -> pd.DataFrame:
     required_aptos_keys = [
         "aptos_train_csv",
@@ -403,54 +278,15 @@ def _load_aptos_full_pool(conf: dict[str, Any], label_order: list[str]) -> pd.Da
     return aptos_full
 
 
-def _load_roboflow_full_pool(conf: dict[str, Any], label_order: list[str]) -> pd.DataFrame:
-    paths_cfg = conf.get("paths", {})
-    root = Path(str(paths_cfg.get("roboflow_root", Path(paths_cfg["dataset_root"]) / "roboflow")))
-    train_dir = Path(str(paths_cfg.get("roboflow_train_dir", root / "train")))
-    valid_dir = Path(str(paths_cfg.get("roboflow_valid_dir", root / "valid")))
-    train_csv = Path(str(paths_cfg.get("roboflow_train_labels_csv", train_dir / "_classes.csv")))
-    valid_csv = Path(str(paths_cfg.get("roboflow_valid_labels_csv", valid_dir / "_classes.csv")))
-
-    rf_train = _parse_roboflow_classes_csv(
-        classes_csv=train_csv,
-        image_dir=train_dir,
-        label_order=label_order,
-        source_name="source_roboflow_train",
-        source_dataset="roboflow",
-    )
-    rf_valid = _parse_roboflow_classes_csv(
-        classes_csv=valid_csv,
-        image_dir=valid_dir,
-        label_order=label_order,
-        source_name="source_roboflow_valid",
-        source_dataset="roboflow",
-    )
-    return pd.concat([rf_train, rf_valid], ignore_index=True)
-
-
 def _data_source(conf: dict[str, Any]) -> str:
     return str(conf.get("data", {}).get("source", "aptos_only")).strip().lower()
 
 
 def _load_dataset_pool(conf: dict[str, Any], label_order: list[str]) -> pd.DataFrame:
     source = _data_source(conf)
-    aptos_aliases = {"aptos_only", "aptos", "aptos2019"}
-    roboflow_aliases = {"roboflow_only", "roboflow", "rf"}
-    mixed_aliases = {"mixed", "aptos_roboflow", "aptos_plus_roboflow"}
-
-    if source in aptos_aliases:
+    if source in {"aptos_only", "aptos", "aptos2019"}:
         return _load_aptos_full_pool(conf, label_order=label_order)
-    if source in roboflow_aliases:
-        return _load_roboflow_full_pool(conf, label_order=label_order)
-    if source in mixed_aliases:
-        aptos_df = _load_aptos_full_pool(conf, label_order=label_order)
-        roboflow_df = _load_roboflow_full_pool(conf, label_order=label_order)
-        merged = pd.concat([aptos_df, roboflow_df], ignore_index=True)
-        merged["patient_id"] = merged["source_dataset"].astype(str) + "::" + merged["patient_id"].astype(str)
-        return merged
-    raise ValueError(
-        f"Unsupported data.source={source}. Use one of: aptos_only, roboflow_only, mixed."
-    )
+    raise ValueError(f"Unsupported data.source={source}. Only aptos_only is supported.")
 
 
 def _split_train_val_test(
@@ -519,10 +355,6 @@ def _is_benchmark(conf: dict[str, Any]) -> bool:
     return _data_protocol(conf) == "benchmark"
 
 
-def _use_legacy_aliases(conf: dict[str, Any]) -> bool:
-    return not _is_benchmark(conf)
-
-
 def _slug_token(raw: Any, fallback: str = "value") -> str:
     token = "".join(ch.lower() if str(ch).isalnum() else "_" for ch in str(raw))
     token = "_".join([part for part in token.split("_") if part])
@@ -531,23 +363,8 @@ def _slug_token(raw: Any, fallback: str = "value") -> str:
 
 def _profile_dataset_tag(conf: dict[str, Any]) -> str:
     source_raw = _data_source(conf)
-    aliases = {
-        "aptos_only": "aptos2019",
-        "aptos": "aptos2019",
-        "aptos2019": "aptos2019",
-        "roboflow_only": "roboflow",
-        "roboflow": "roboflow",
-        "rf": "roboflow",
-        "mixed": "aptos_roboflow",
-        "aptos_roboflow": "aptos_roboflow",
-        "aptos_plus_roboflow": "aptos_roboflow",
-    }
-    if source_raw in aliases:
-        return aliases[source_raw]
-    if "aptos" in source_raw:
+    if source_raw in {"aptos_only", "aptos", "aptos2019"} or "aptos" in source_raw:
         return "aptos2019"
-    if "roboflow" in source_raw:
-        return "roboflow"
     return _slug_token(source_raw, fallback="dataset")
 
 

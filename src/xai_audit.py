@@ -60,8 +60,6 @@ from src.data import (
     _save_json,
     _set_seed,
     _table_path,
-    _use_legacy_aliases,
-    _write_alias_copy,
     load_project_config,
     prepare_data_manifests,
 )
@@ -70,8 +68,6 @@ from src.train import (
     _LogitWrapper,
     _calibration_path_for_run_id,
     _gradcam_status_log_path,
-    _legacy_gradcam_status_alias_path,
-    _legacy_shap_status_alias_path,
     _load_model,
     _predictions_path_for_run_id,
     _resolve_checkpoint_and_run_id,
@@ -794,9 +790,6 @@ def run_xai_analysis(
             )
             gradcam_status_note = status
 
-    if _use_legacy_aliases(conf):
-        _write_alias_copy(gradcam_status_path, _legacy_gradcam_status_alias_path(conf, seed, split))
-
     rq1_df = pd.DataFrame(
         grad_rows,
         columns=[
@@ -1030,9 +1023,6 @@ def run_xai_analysis(
             },
         )
         shap_status_note = "success_cpu_fallback" if shap_fallback_used else "success"
-
-    if _use_legacy_aliases(conf):
-        _write_alias_copy(shap_status_path, _legacy_shap_status_alias_path(conf, seed, split))
 
     total_elapsed_m = (time.time() - xai_start_time) / 60.0
     print(

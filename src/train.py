@@ -1,38 +1,17 @@
-"""Training and evaluation module.
-
-Fine-tunes the EfficientNet-B4 backbone on APTOS 2019 with focal loss, fits
-post-hoc temperature scaling on the validation split, and produces all
-predictive-performance and calibration artefacts consumed by the report
-(headline metrics, per-class metrics, confusion matrix, calibration bins).
-
-Main entry points used by the notebook:
-    notebook_run_training()         -- fine-tune or reuse the cached checkpoint
-    notebook_run_core_evaluation()  -- inference on the 550-image test split
-"""
+"""Training, calibration, and evaluation for the DR classifier."""
 from __future__ import annotations
 
-import copy
-import json
-import os
-import random
-import shutil
-import types
-import warnings
 import hashlib
-import math
+import json
+import shutil
 import time
-import gc
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import matplotlib.pyplot as plt
-import matplotlib.gridspec as gridspec
-import matplotlib.patches as mpatches
 import numpy as np
 import pandas as pd
-from PIL import Image
-import cv2
 from sklearn.metrics import (
     accuracy_score,
     cohen_kappa_score,
@@ -52,19 +31,9 @@ from torchvision.models import EfficientNet_B4_Weights, ResNet50_Weights, ViT_B_
 from torchvision.models.efficientnet import FusedMBConv, MBConv
 from torchvision.models.resnet import BasicBlock, Bottleneck
 
-
-
 import yaml
 
-
-# -----------------------------
-# Config + common utils
-# -----------------------------
-
-
-from src.data import (  # noqa: F401
-    _REQUIRED_PATH_KEYS,
-    _infer_project_root,
+from src.data import (
     load_project_config,
     _cfg,
     _save_json,
@@ -72,20 +41,11 @@ from src.data import (  # noqa: F401
     _write_alias_copy,
     _set_seed,
     _resolve_device,
-    _infer_laterality,
-    _class_name_from_id,
-    _normalize_label_token,
-    _parse_aptos_csv,
-    _parse_roboflow_classes_csv,
-    _load_aptos_full_pool,
-    _load_roboflow_full_pool,
-    _data_source,
     _load_dataset_pool,
     _split_train_val_test,
     _split_train_val_only,
     _data_protocol,
     _is_benchmark,
-    _use_legacy_aliases,
     _slug_token,
     _profile_dataset_tag,
     _profile_split_tag,
@@ -93,20 +53,14 @@ from src.data import (  # noqa: F401
     _manifest_suffix,
     _manifest_filename_map,
     _manifest_outputs,
-    _split_two_stage_stratified_pool,
     freeze_current_test_manifest,
     prepare_data_manifests,
-    _build_transform,
-    _apply_fundus_preprocessing,
     _FundusDataset,
-    _load_image_for_inference,
     _manifest_path,
     _backbone_name,
     _model_image_size,
-    _to_ratio_fraction,
     _split_policy_tag,
     _table_path,
-    notebook_prepare_data_overview,
 )
 
 
@@ -327,34 +281,6 @@ def _latest_run_record_path(conf: dict[str, Any], seed: int) -> Path:
     return Path(conf["paths"]["logs_dir"]) / f"latest_run_seed{seed}.json"
 
 
-def _legacy_checkpoint_alias_path(conf: dict[str, Any], seed: int) -> Path:
-    return Path(conf["paths"]["checkpoints_dir"]) / f"classifier_seed{seed}.pt"
-
-
-def _legacy_calibration_alias_path(conf: dict[str, Any], seed: int) -> Path:
-    return Path(conf["paths"]["checkpoints_dir"]) / f"classifier_seed{seed}_calibration.json"
-
-
-def _legacy_predictions_alias_path(conf: dict[str, Any], seed: int, split: str) -> Path:
-    return Path(conf["paths"]["predictions_dir"]) / f"predictions_seed{seed}_{split}.csv"
-
-
-def _legacy_train_history_alias_path(conf: dict[str, Any], seed: int) -> Path:
-    return Path(conf["paths"]["logs_dir"]) / f"train_history_seed{seed}.json"
-
-
-def _legacy_gradcam_status_alias_path(conf: dict[str, Any], seed: int, split: str) -> Path:
-    return Path(conf["paths"]["logs_dir"]) / f"gradcam_status_seed{seed}_{split}.json"
-
-
-def _legacy_shap_status_alias_path(conf: dict[str, Any], seed: int, split: str) -> Path:
-    return Path(conf["paths"]["logs_dir"]) / f"shap_status_seed{seed}_{split}.json"
-
-
-def _legacy_run_log_alias_path(conf: dict[str, Any], seed: int) -> Path:
-    return Path(conf["paths"]["logs_dir"]) / f"run_complete_workflow_seed{seed}.json"
-
-
 def _new_run_id(conf: dict[str, Any], seed: int) -> str:
     backbone = _backbone_name(conf)
     split_policy = _split_policy_tag(conf)
@@ -408,10 +334,6 @@ def _gradcam_status_log_path(conf: dict[str, Any], run_id: str, split: str) -> P
 
 def _shap_status_log_path(conf: dict[str, Any], run_id: str, split: str) -> Path:
     return Path(conf["paths"]["logs_dir"]) / f"{run_id}_{split}_shap_status.json"
-
-
-def _workflow_run_log_path(conf: dict[str, Any], run_id: str) -> Path:
-    return Path(conf["paths"]["logs_dir"]) / f"{run_id}_run_complete_workflow.json"
 
 
 def _save_latest_run_record(
@@ -509,15 +431,6 @@ def _resolve_checkpoint_and_run_id(
         _save_latest_run_record(conf, seed, run_id, ckpt)
         return ckpt, run_id
 
-    if _use_legacy_aliases(conf):
-        legacy_ckpt = _legacy_checkpoint_alias_path(conf, seed)
-        if legacy_ckpt.exists():
-            run_id = _run_id_from_checkpoint_path(conf, seed, legacy_ckpt)
-            migrated_ckpt = _checkpoint_path_for_run_id(conf, run_id)
-            _write_alias_copy(legacy_ckpt, migrated_ckpt)
-            _save_latest_run_record(conf, seed, run_id, migrated_ckpt)
-            return migrated_ckpt, run_id
-
     if require_existing:
         raise FileNotFoundError(
             f"No checkpoint found for seed={seed} under {Path(conf['paths']['checkpoints_dir'])}"
@@ -540,11 +453,6 @@ def _find_matching_checkpoint_by_signature(
         named = [p for p in ckpt_dir.glob(pattern) if p.is_file()]
         named.sort(key=lambda p: p.stat().st_mtime, reverse=True)
         candidates.extend(named)
-
-    if _use_legacy_aliases(conf):
-        legacy = _legacy_checkpoint_alias_path(conf, seed)
-        if legacy.exists():
-            candidates.append(legacy)
 
     seen: set[str] = set()
     for ckpt in candidates:
@@ -635,29 +543,6 @@ def _class_weights(class_ids: list[int], num_classes: int, device: torch.device)
     weights = counts.sum() / counts
     weights = weights / weights.mean()
     return torch.tensor(weights, dtype=torch.float32, device=device)
-
-
-def _ordinal_ce_loss(
-    logits: torch.Tensor,
-    targets: torch.Tensor,
-    num_classes: int,
-    class_weights: torch.Tensor | None = None,
-    label_smoothing: float = 0.0,
-    ordinal_weight: float = 0.3,
-) -> torch.Tensor:
-    ce = F.cross_entropy(
-        logits,
-        targets,
-        weight=class_weights,
-        label_smoothing=float(label_smoothing),
-    )
-    probs = torch.softmax(logits, dim=1)
-    class_idx = torch.arange(num_classes, device=logits.device, dtype=probs.dtype)
-    target_f = targets.to(dtype=probs.dtype).unsqueeze(1)
-    dist_sq = (class_idx.unsqueeze(0) - target_f) ** 2
-    scale = float(max(1, (num_classes - 1) ** 2))
-    ordinal_penalty = (probs * (dist_sq / scale)).sum(dim=1).mean()
-    return ce + float(ordinal_weight) * ordinal_penalty
 
 
 def _focal_loss(
@@ -886,8 +771,6 @@ def train_dr_classifier(
                 _write_alias_copy(existing_ckpt, migrated_ckpt)
                 existing_ckpt = migrated_ckpt
             _save_latest_run_record(conf, seed=seed, run_id=existing_run_id, checkpoint_path=existing_ckpt)
-            if _use_legacy_aliases(conf):
-                _write_alias_copy(existing_ckpt, _legacy_checkpoint_alias_path(conf, seed))
             print(f"Reusing existing checkpoint: {existing_ckpt}")
             return str(existing_ckpt)
 
@@ -1040,24 +923,9 @@ def train_dr_classifier(
     use_class_weights = bool(conf["training"].get("use_class_weights", True))
     class_weights_for_loss = class_w if use_class_weights else None
     label_smoothing = float(conf["training"].get("label_smoothing", 0.0))
-    loss_name = str(conf["training"].get("loss_name", "auto")).strip().lower()
-    use_focal_loss = bool(conf["training"].get("use_focal_loss", False))
-    use_ordinal_loss = bool(conf["training"].get("use_ordinal_loss", True))
-    if loss_name == "focal":
-        use_focal_loss = True
-        use_ordinal_loss = False
-    elif loss_name == "ordinal":
-        use_ordinal_loss = True
-        use_focal_loss = False
-    elif loss_name == "cross_entropy":
-        use_ordinal_loss = False
-        use_focal_loss = False
-    elif loss_name == "auto":
-        # Backward-compatible behavior: ordinal loss if enabled, otherwise CE.
-        use_focal_loss = bool(conf["training"].get("use_focal_loss", False))
-
+    loss_name = str(conf["training"].get("loss_name", "focal")).strip().lower()
+    use_focal_loss = (loss_name == "focal") or bool(conf["training"].get("use_focal_loss", False))
     focal_gamma = float(conf["training"].get("focal_gamma", 2.0))
-    ordinal_loss_weight = float(conf["training"].get("ordinal_loss_weight", 0.3))
     grad_accum_steps = int(max(1, conf["training"].get("grad_accum_steps", 1)))
     max_epochs = int(conf["training"]["epochs"])
     patience_limit = int(conf["training"]["early_stopping_patience"])
@@ -1070,15 +938,6 @@ def train_dr_classifier(
                 gamma=focal_gamma,
                 class_weights=class_weights_for_loss,
                 label_smoothing=label_smoothing,
-            )
-        if use_ordinal_loss:
-            return _ordinal_ce_loss(
-                logits=logits,
-                targets=targets,
-                num_classes=num_classes,
-                class_weights=class_weights_for_loss,
-                label_smoothing=label_smoothing,
-                ordinal_weight=ordinal_loss_weight,
             )
         return F.cross_entropy(
             logits,
@@ -1128,7 +987,7 @@ def train_dr_classifier(
         "lr_group_names": [f"group_{i}" for i in range(len(optimizer.param_groups))],
         "optimizer_name": optimizer_name,
         "scheduler_name": scheduler_name if use_scheduler else "none",
-        "loss_name": "focal" if use_focal_loss else ("ordinal" if use_ordinal_loss else "cross_entropy"),
+        "loss_name": "focal" if use_focal_loss else "cross_entropy",
         "grad_accum_steps": int(grad_accum_steps),
         "train_started_at": train_started_at,
     }
@@ -1259,9 +1118,6 @@ def train_dr_classifier(
 
     train_history_path = _train_history_log_path(conf, run_id)
     _save_json(train_history_path, history)
-    if _use_legacy_aliases(conf):
-        _write_alias_copy(train_history_path, _legacy_train_history_alias_path(conf, seed))
-        _write_alias_copy(ckpt, _legacy_checkpoint_alias_path(conf, seed))
     _save_latest_run_record(
         conf,
         seed=seed,
@@ -1343,8 +1199,6 @@ def build_validation_calibration_table(cfg: str | Path | dict[str, Any], seed: i
     )
     val_predictions_path = _predictions_path_for_run_id(conf, run_id, "val")
     val_df.to_csv(val_predictions_path, index=False)
-    if _use_legacy_aliases(conf):
-        _write_alias_copy(val_predictions_path, _legacy_predictions_alias_path(conf, seed, "val"))
 
     rel = _build_reliability_table(val_df, n_bins=n_bins, interpolate_empty_bins=interpolate_empty_bins)
     rel_path = _table_path(conf, "calibration_bins", seed=seed)
@@ -1382,8 +1236,6 @@ def build_validation_calibration_table(cfg: str | Path | dict[str, Any], seed: i
     }
     out = _calibration_path_for_run_id(conf, run_id)
     _save_json(out, payload)
-    if _use_legacy_aliases(conf):
-        _write_alias_copy(out, _legacy_calibration_alias_path(conf, seed))
     _save_latest_run_record(conf, seed=seed, run_id=run_id, checkpoint_path=ckpt_path)
     return str(out)
 
@@ -1443,8 +1295,6 @@ def run_split_inference(cfg: str | Path | dict[str, Any], seed: int = 1988, spli
 
     out = _predictions_path_for_run_id(conf, run_id, split)
     pred_df.to_csv(out, index=False)
-    if _use_legacy_aliases(conf):
-        _write_alias_copy(out, _legacy_predictions_alias_path(conf, seed, split))
     _save_latest_run_record(conf, seed=seed, run_id=run_id, checkpoint_path=ckpt_path)
     return str(out)
 
@@ -1546,249 +1396,6 @@ def export_final_headline_metrics(
     out_path = _table_path(conf, "final_headline_metrics", seed=seed, split=split)
     row.to_csv(out_path, index=False)
     return str(out_path)
-
-
-def _ci95_summary(values: list[float]) -> dict[str, float]:
-    arr = np.asarray(values, dtype=float)
-    arr = arr[np.isfinite(arr)]
-    n = int(arr.size)
-    if n == 0:
-        return {
-            "n": 0.0,
-            "mean": float("nan"),
-            "std": float("nan"),
-            "ci95_low": float("nan"),
-            "ci95_high": float("nan"),
-        }
-
-    mean = float(np.mean(arr))
-    std = float(np.std(arr, ddof=1)) if n > 1 else 0.0
-    if n > 1:
-        margin = 1.96 * (std / math.sqrt(n))
-    else:
-        margin = 0.0
-    return {
-        "n": float(n),
-        "mean": mean,
-        "std": std,
-        "ci95_low": float(mean - margin),
-        "ci95_high": float(mean + margin),
-    }
-
-
-def _profile_seed_list(conf: dict[str, Any], seeds: list[int] | None = None) -> list[int]:
-    if seeds is not None and len(seeds) > 0:
-        return [int(x) for x in seeds]
-    data_seeds = conf.get("data", {}).get("split_seed_list", [])
-    if isinstance(data_seeds, list) and len(data_seeds) > 0:
-        return [int(x) for x in data_seeds]
-    project_seeds = conf.get("project", {}).get("seed_list", [])
-    if isinstance(project_seeds, list) and len(project_seeds) > 0:
-        return [int(x) for x in project_seeds]
-    return [1988]
-
-
-def export_benchmark_scoreboard(
-    cfg: str | Path | dict[str, Any] = "configs/base.yaml",
-    seeds: list[int] | None = None,
-    split: str = "test",
-    ensure_predictions: bool = True,
-) -> dict[str, str]:
-    conf = _cfg(cfg)
-    if not _is_benchmark(conf):
-        raise ValueError("export_benchmark_scoreboard requires data.protocol=benchmark.")
-
-    seed_list = _profile_seed_list(conf, seeds=seeds)
-    metric_rows: list[dict[str, Any]] = []
-    per_class_rows: list[dict[str, Any]] = []
-
-    for seed in seed_list:
-        prepare_data_manifests(conf, seed=seed)
-        if ensure_predictions:
-            pred_path = Path(run_split_inference(conf, seed=seed, split=split))
-            eval_out = evaluate_pipeline_outputs(conf, seed=seed, split=split, predictions_csv=pred_path)
-        else:
-            eval_out = evaluate_pipeline_outputs(conf, seed=seed, split=split, predictions_csv=None)
-
-        metrics_df = pd.read_csv(eval_out["metrics"])
-        all_df = metrics_df[metrics_df["scope"].astype(str).str.lower() == "all"].copy()
-        if len(all_df) == 0:
-            raise RuntimeError(f"No scope='all' metrics found for seed={seed}, split={split}")
-        all_row = all_df.iloc[0].to_dict()
-        all_row["seed"] = int(seed)
-        metric_rows.append(all_row)
-
-        per_class_df = pd.read_csv(eval_out["per_class"])
-        per_class_df["seed"] = int(seed)
-        per_class_df["run_id"] = str(all_row.get("run_id", ""))
-        per_class_rows.append(per_class_df)
-
-    metrics_by_seed = pd.DataFrame(metric_rows)
-    per_class_all = pd.concat(per_class_rows, ignore_index=True) if per_class_rows else pd.DataFrame()
-
-    summary_metrics = ["accuracy", "roc_auc_ovr_macro", "f1_macro", "precision_macro", "recall_macro", "qwk"]
-    summary_rows: list[dict[str, Any]] = []
-    for name in summary_metrics:
-        stat = _ci95_summary(metrics_by_seed[name].astype(float).tolist()) if name in metrics_by_seed.columns else _ci95_summary([])
-        summary_rows.append(
-            {
-                "metric": name,
-                "n_seeds": int(stat["n"]),
-                "mean": float(stat["mean"]),
-                "std": float(stat["std"]),
-                "ci95_low": float(stat["ci95_low"]),
-                "ci95_high": float(stat["ci95_high"]),
-            }
-        )
-
-    per_class_summary_rows: list[dict[str, Any]] = []
-    if len(per_class_all):
-        for (class_id, class_name), grp in per_class_all.groupby(["class_id", "class_name"], dropna=False):
-            recall_stat = _ci95_summary(grp["recall"].astype(float).tolist())
-            per_class_summary_rows.append(
-                {
-                    "class_id": int(class_id),
-                    "class_name": str(class_name),
-                    "n_seeds": int(recall_stat["n"]),
-                    "recall_mean": float(recall_stat["mean"]),
-                    "recall_std": float(recall_stat["std"]),
-                    "recall_ci95_low": float(recall_stat["ci95_low"]),
-                    "recall_ci95_high": float(recall_stat["ci95_high"]),
-                }
-            )
-
-    tables_dir = Path(conf["paths"]["tables_dir"])
-    profile_tag = _profile_profile_tag(conf)
-    seed_metrics_path = tables_dir / f"{profile_tag}_seed_metrics_{split}.csv"
-    scoreboard_path = tables_dir / f"{profile_tag}_scoreboard_{split}.csv"
-    per_class_path = tables_dir / f"{profile_tag}_per_class_recall_{split}.csv"
-    criteria_path = tables_dir / f"{profile_tag}_success_criteria_{split}.json"
-
-    metrics_by_seed.to_csv(seed_metrics_path, index=False)
-    pd.DataFrame(summary_rows).to_csv(scoreboard_path, index=False)
-    pd.DataFrame(per_class_summary_rows).to_csv(per_class_path, index=False)
-
-    def _metric_mean(name: str) -> float:
-        row = next((r for r in summary_rows if r["metric"] == name), None)
-        return float(row["mean"]) if row is not None else float("nan")
-
-    criteria_payload = {
-        "seed_list": [int(s) for s in seed_list],
-        "split": str(split),
-        "targets": {
-            "accuracy_mean_min": 0.80,
-            "roc_auc_ovr_macro_mean_min": 0.93,
-            "qwk_mean_min": 0.75,
-            "class_2_3_4_recall_min": 0.55,
-        },
-        "observed": {
-            "accuracy_mean": _metric_mean("accuracy"),
-            "roc_auc_ovr_macro_mean": _metric_mean("roc_auc_ovr_macro"),
-            "qwk_mean": _metric_mean("qwk"),
-            "class_recall_summary_path": str(per_class_path.resolve()),
-        },
-    }
-    _save_json(criteria_path, criteria_payload)
-
-    return {
-        "benchmark_seed_metrics": str(seed_metrics_path),
-        "benchmark_scoreboard": str(scoreboard_path),
-        "benchmark_per_class_recall": str(per_class_path),
-        "benchmark_success_criteria": str(criteria_path),
-    }
-
-
-def run_complete_workflow(cfg_path: str | Path = "configs/base.yaml", seed: int = 1988) -> dict[str, str]:
-    conf = _cfg(cfg_path)
-
-    manifests = prepare_data_manifests(conf, seed=seed)
-    ckpt = train_dr_classifier(conf, seed=seed, manifests=manifests)
-    ckpt_path, run_id = _resolve_checkpoint_and_run_id(
-        conf,
-        seed=seed,
-        checkpoint=ckpt,
-        require_existing=True,
-    )
-    calib = build_validation_calibration_table(conf, seed=seed, manifests=manifests, checkpoint=ckpt)
-    pred = run_split_inference(conf, seed=seed, split="test")
-    xai_out = run_xai_analysis(
-        conf,
-        seed=seed,
-        split="test",
-        checkpoint=ckpt_path,
-        predictions_csv=pred,
-        shap_mode=str(conf["xai"].get("shap_mode", "subset")),
-        shap_max_samples=int(conf["xai"].get("shap_max_samples", 128)),
-    )
-    eval_out = evaluate_pipeline_outputs(conf, seed=seed, split="test", predictions_csv=pred)
-
-    out = {
-        "run_id": run_id,
-        "manifests": str(Path(conf["paths"]["manifests_dir"])),
-        "checkpoint": str(ckpt_path),
-        "calibration": str(calib),
-        "predictions": str(pred),
-        **xai_out,
-        **eval_out,
-    }
-    run_log = _workflow_run_log_path(conf, run_id)
-    _save_json(run_log, out)
-    if _use_legacy_aliases(conf):
-        _write_alias_copy(run_log, _legacy_run_log_alias_path(conf, seed))
-    _save_latest_run_record(conf, seed=seed, run_id=run_id, checkpoint_path=ckpt_path)
-    out["run_log"] = str(run_log)
-    return out
-
-
-def run_benchmark_experiments(
-    cfg_path: str | Path = "configs/base.yaml",
-    seeds: list[int] | None = None,
-    split: str = "test",
-    run_xai: bool = False,
-    force_retrain: bool = False,
-) -> dict[str, Any]:
-    conf = _cfg(cfg_path)
-    if not _is_benchmark(conf):
-        raise ValueError("run_benchmark_experiments requires data.protocol=benchmark.")
-
-    seed_list = _profile_seed_list(conf, seeds=seeds)
-    runs: list[dict[str, Any]] = []
-
-    for seed in seed_list:
-        manifests = prepare_data_manifests(conf, seed=seed)
-        ckpt = train_dr_classifier(conf, seed=seed, manifests=manifests, reuse_if_exists=(not force_retrain))
-        build_validation_calibration_table(conf, seed=seed, manifests=manifests, checkpoint=ckpt)
-        pred = run_split_inference(conf, seed=seed, split=split)
-        eval_out = evaluate_pipeline_outputs(conf, seed=seed, split=split, predictions_csv=pred)
-
-        run_payload: dict[str, Any] = {
-            "seed": int(seed),
-            "checkpoint": str(ckpt),
-            "predictions": str(pred),
-            **eval_out,
-        }
-        if run_xai:
-            run_payload.update(
-                run_xai_analysis(
-                    conf,
-                    seed=seed,
-                    split=split,
-                    checkpoint=ckpt,
-                    predictions_csv=pred,
-                    shap_mode=str(conf["xai"].get("shap_mode", "subset")),
-                    shap_max_samples=int(conf["xai"].get("shap_max_samples", 128)),
-                )
-            )
-        runs.append(run_payload)
-
-    scoreboard = export_benchmark_scoreboard(conf, seeds=seed_list, split=split, ensure_predictions=False)
-    return {
-        "protocol": "benchmark",
-        "split": split,
-        "seed_list": [int(s) for s in seed_list],
-        "runs": runs,
-        **scoreboard,
-    }
 
 
 def notebook_run_training(
