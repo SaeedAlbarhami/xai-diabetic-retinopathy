@@ -163,19 +163,10 @@ def notebook_load_xai_committee_summary(
         "Mean Border Ratio",
         "Mean Faithfulness (k=20%)",
     ]
-    summary_tbl["Rule-Satisfied (descriptive)"] = (
-        pd.to_numeric(summary_tbl["Rule-Satisfied (descriptive)"], errors="coerce") * 100.0
-    ).round(1).astype(str) + "%"
-    summary_tbl["CI95 Low"] = (
-        pd.to_numeric(summary_tbl["CI95 Low"], errors="coerce") * 100.0
-    ).round(1).astype(str) + "%"
-    summary_tbl["CI95 High"] = (
-        pd.to_numeric(summary_tbl["CI95 High"], errors="coerce") * 100.0
-    ).round(1).astype(str) + "%"
-    summary_tbl["Mean Border Ratio"] = pd.to_numeric(summary_tbl["Mean Border Ratio"], errors="coerce").round(3)
-    summary_tbl["Mean Faithfulness (k=20%)"] = pd.to_numeric(
-        summary_tbl["Mean Faithfulness (k=20%)"], errors="coerce"
-    ).round(3)
+    for col in ["Rule-Satisfied (descriptive)", "CI95 Low", "CI95 High"]:
+        summary_tbl[col] = (pd.to_numeric(summary_tbl[col], errors="coerce") * 100.0).round(1).astype(str) + "%"
+    for col in ["Mean Border Ratio", "Mean Faithfulness (k=20%)"]:
+        summary_tbl[col] = pd.to_numeric(summary_tbl[col], errors="coerce").round(3)
 
     rate = pd.to_numeric(plot_df["pass_rate"], errors="coerce").to_numpy(dtype=float)
     low = pd.to_numeric(plot_df["pass_rate_ci95_low"], errors="coerce").to_numpy(dtype=float)
@@ -206,9 +197,11 @@ def notebook_load_xai_committee_summary(
 
     coverage_text = "coverage file not found"
     if len(coverage_df):
-        g_miss = int((pd.to_numeric(coverage_df.get("gradcam_done", pd.Series(dtype=float)), errors="coerce") == 0).sum()) if "gradcam_done" in coverage_df.columns else -1
-        s_miss = int((pd.to_numeric(coverage_df.get("shap_done", pd.Series(dtype=float)), errors="coerce") == 0).sum()) if "shap_done" in coverage_df.columns else -1
-        coverage_text = f"coverage check: gradcam_missing={g_miss}, shap_missing={s_miss}"
+        def _missing(col: str) -> int:
+            if col not in coverage_df.columns:
+                return -1
+            return int((pd.to_numeric(coverage_df[col], errors="coerce") == 0).sum())
+        coverage_text = f"coverage check: gradcam_missing={_missing('gradcam_done')}, shap_missing={_missing('shap_done')}"
 
     scope_text = "scope unavailable"
     if "evaluation_scope" in method_stats_df.columns and len(method_stats_df):
@@ -318,9 +311,8 @@ def notebook_load_xai_advanced_audit(
     correctness_view = pd.DataFrame()
     if len(correctness_df):
         correctness_view = correctness_df.copy()
-        correctness_view["pass_rate"] = pd.to_numeric(correctness_view["pass_rate"], errors="coerce").round(3)
-        correctness_view["mean_border_ratio"] = pd.to_numeric(correctness_view["mean_border_ratio"], errors="coerce").round(3)
-        correctness_view["mean_faith_delta_k20"] = pd.to_numeric(correctness_view["mean_faith_delta_k20"], errors="coerce").round(3)
+        for col in ["pass_rate", "mean_border_ratio", "mean_faith_delta_k20"]:
+            correctness_view[col] = pd.to_numeric(correctness_view[col], errors="coerce").round(3)
         correctness_view = correctness_view.sort_values(["method", "group"]).reset_index(drop=True)
 
     classwise_view = pd.DataFrame()

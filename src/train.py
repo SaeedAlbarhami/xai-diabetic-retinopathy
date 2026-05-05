@@ -996,27 +996,23 @@ def train_dr_classifier(
 
     train_finished_at = datetime.now().isoformat(timespec="seconds")
     train_duration_seconds = max(1e-6, time.perf_counter() - train_start_perf)
-    history["train_finished_at"] = train_finished_at
-    history["train_duration_seconds"] = float(train_duration_seconds)
-    history["train_duration_minutes"] = float(train_duration_seconds / 60.0)
-    history["epochs_ran"] = int(len(history["train_loss"]))
-    history["best_val_macro_f1"] = float(best_f1) if np.isfinite(best_f1) else None
+    finish_fields = {
+        "train_finished_at": train_finished_at,
+        "train_duration_seconds": float(train_duration_seconds),
+        "train_duration_minutes": float(train_duration_seconds / 60.0),
+        "epochs_ran": int(len(history["train_loss"])),
+        "best_val_macro_f1": float(best_f1) if np.isfinite(best_f1) else None,
+    }
+    history.update(finish_fields)
 
     train_history_path = _train_history_log_path(conf, run_id)
     _save_json(train_history_path, history)
     _save_latest_run_record(
-        conf,
-        seed=seed,
-        run_id=run_id,
-        checkpoint_path=ckpt,
+        conf, seed=seed, run_id=run_id, checkpoint_path=ckpt,
         extra_fields={
             "status": "trained",
             "train_started_at": train_started_at,
-            "train_finished_at": train_finished_at,
-            "train_duration_seconds": float(train_duration_seconds),
-            "train_duration_minutes": float(train_duration_seconds / 60.0),
-            "epochs_ran": int(len(history["train_loss"])),
-            "best_val_macro_f1": float(best_f1) if np.isfinite(best_f1) else None,
+            **finish_fields,
             "train_history_path": str(train_history_path.resolve()),
         },
     )
