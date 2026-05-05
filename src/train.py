@@ -1474,9 +1474,6 @@ def notebook_run_core_evaluation(
     per_class_path = Path(eval_outputs["per_class"])
     confusion_path = Path(eval_outputs["confusion"])
 
-    if not headline_path.exists():
-        _ = export_final_headline_metrics(conf, seed=int(seed), split=split_key, metrics_csv=metrics_path)
-
     headline_df = pd.read_csv(headline_path)
     metrics_df = pd.read_csv(metrics_path)
     summary_df = pd.read_csv(summary_path)
