@@ -42,10 +42,6 @@ from src.data import (
     _set_seed,
     _resolve_device,
     _load_dataset_pool,
-    _split_train_val_test,
-    _split_train_val_only,
-    _data_protocol,
-    _is_benchmark,
     _slug_token,
     _profile_dataset_tag,
     _profile_split_tag,
@@ -53,7 +49,6 @@ from src.data import (
     _manifest_suffix,
     _manifest_filename_map,
     _manifest_outputs,
-    freeze_current_test_manifest,
     prepare_data_manifests,
     _FundusDataset,
     _manifest_path,
@@ -481,7 +476,7 @@ def _run_id_from_predictions_path(predictions_path: str | Path, split: str) -> s
 
 def _checkpoint_config_signature(conf: dict[str, Any]) -> dict[str, Any]:
     return {
-        "data_protocol": _data_protocol(conf),
+        "data_protocol": "benchmark",
         "data_source": str(conf.get("data", {}).get("source", "aptos_only")),
         "profile_test_ratio": float(conf.get("data", {}).get("profile_test_ratio", conf.get("data", {}).get("test_ratio", 0.15))),
         "profile_val_ratio_within_train": float(
@@ -819,7 +814,7 @@ def train_dr_classifier(
     sample_weights_np = (1.0 / counts[class_ids]).astype(np.float32)
 
     use_weighted_sampler = bool(conf["training"].get("use_weighted_sampler", True))
-    profile_class_balanced_sampling = bool(conf["training"].get("profile_class_balanced_sampling", False)) and _is_benchmark(conf)
+    profile_class_balanced_sampling = bool(conf["training"].get("profile_class_balanced_sampling", False))
     profile_target_per_class = int(conf.get("augmentation", {}).get("profile_target_per_class", 0))
     sampler = None
     if use_weighted_sampler:
@@ -977,9 +972,7 @@ def train_dr_classifier(
         "train_started_at": train_started_at,
     }
 
-    log_every_batches_default = 100 if _is_benchmark(conf) else 0
-    log_every_batches = int(conf["training"].get("log_every_batches", log_every_batches_default))
-    log_every_batches = max(0, log_every_batches)
+    log_every_batches = max(0, int(conf["training"].get("log_every_batches", 100)))
 
     for epoch in range(1, max_epochs + 1):
         model.train()

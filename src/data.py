@@ -289,72 +289,6 @@ def _load_dataset_pool(conf: dict[str, Any], label_order: list[str]) -> pd.DataF
     raise ValueError(f"Unsupported data.source={source}. Only aptos_only is supported.")
 
 
-def _split_train_val_test(
-    full_df: pd.DataFrame,
-    train_ratio: float,
-    test_ratio: float,
-    val_ratio: float,
-    stratify_seed: int,
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    ratios_sum = train_ratio + test_ratio + val_ratio
-    if not np.isclose(ratios_sum, 1.0, atol=1e-6):
-        raise ValueError(
-            f"Split ratios must sum to 1.0, got train={train_ratio}, test={test_ratio}, val={val_ratio}, sum={ratios_sum}"
-        )
-    if min(train_ratio, test_ratio, val_ratio) <= 0:
-        raise ValueError("All split ratios must be > 0")
-
-    train_df, holdout_df = train_test_split(
-        full_df,
-        train_size=train_ratio,
-        random_state=stratify_seed,
-        stratify=full_df["class_id"],
-    )
-
-    holdout_ratio = test_ratio + val_ratio
-    rel_test_ratio = test_ratio / holdout_ratio
-
-    test_df, val_df = train_test_split(
-        holdout_df,
-        train_size=rel_test_ratio,
-        random_state=stratify_seed,
-        stratify=holdout_df["class_id"],
-    )
-
-    return (
-        train_df.reset_index(drop=True),
-        val_df.reset_index(drop=True),
-        test_df.reset_index(drop=True),
-    )
-
-
-def _split_train_val_only(
-    full_df: pd.DataFrame,
-    train_ratio: float,
-    val_ratio: float,
-    stratify_seed: int,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
-    ratio_sum = float(train_ratio + val_ratio)
-    if ratio_sum <= 0:
-        raise ValueError(f"train_ratio + val_ratio must be > 0, got {ratio_sum}")
-    train_size_rel = float(train_ratio / ratio_sum)
-    train_df, val_df = train_test_split(
-        full_df,
-        train_size=train_size_rel,
-        random_state=stratify_seed,
-        stratify=full_df["class_id"],
-    )
-    return train_df.reset_index(drop=True), val_df.reset_index(drop=True)
-
-
-def _data_protocol(conf: dict[str, Any]) -> str:
-    return str(conf.get("data", {}).get("protocol", "default")).strip().lower()
-
-
-def _is_benchmark(conf: dict[str, Any]) -> bool:
-    return _data_protocol(conf) == "benchmark"
-
-
 def _slug_token(raw: Any, fallback: str = "value") -> str:
     token = "".join(ch.lower() if str(ch).isalnum() else "_" for ch in str(raw))
     token = "_".join([part for part in token.split("_") if part])
@@ -384,28 +318,18 @@ def _profile_profile_tag(conf: dict[str, Any]) -> str:
 
 
 def _manifest_suffix(conf: dict[str, Any], seed: int | None = None) -> str:
-    if not _is_benchmark(conf):
-        return ""
     use_seed = int(seed if seed is not None else conf.get("data", {}).get("stratify_seed", 1988))
     return f"_{_profile_profile_tag(conf)}_seed{use_seed}"
 
 
 def _manifest_filename_map(conf: dict[str, Any], seed: int | None = None) -> dict[str, str]:
     suffix = _manifest_suffix(conf, seed=seed)
-    if suffix:
-        return {
-            "full_data": f"full_data{suffix}.csv",
-            "test_full": f"test_full{suffix}.csv",
-            "train_split": f"train_split{suffix}.csv",
-            "val_split": f"val_split{suffix}.csv",
-            "summary": f"summary{suffix}.json",
-        }
     return {
-        "full_data": "full_data.csv",
-        "test_full": "test_full.csv",
-        "train_split": "train_split.csv",
-        "val_split": "val_split.csv",
-        "summary": "summary.json",
+        "full_data": f"full_data{suffix}.csv",
+        "test_full": f"test_full{suffix}.csv",
+        "train_split": f"train_split{suffix}.csv",
+        "val_split": f"val_split{suffix}.csv",
+        "summary": f"summary{suffix}.json",
     }
 
 
@@ -463,107 +387,27 @@ def _split_two_stage_stratified_pool(
     return train_split, val_split, test_split, train_pool
 
 
-def freeze_current_test_manifest(cfg: str | Path | dict[str, Any], seed: int = 1988) -> str:
-    conf = _cfg(cfg)
-    label_order = list(conf["data"]["label_order"])
-    full_df = _load_dataset_pool(conf, label_order=label_order)
-    _, _, test_split = _split_train_val_test(
-        full_df=full_df,
-        train_ratio=float(conf["data"]["train_ratio"]),
-        test_ratio=float(conf["data"]["test_ratio"]),
-        val_ratio=float(conf["data"]["val_ratio"]),
-        stratify_seed=int(seed),
-    )
-    test_split = test_split.assign(split="test")
-    dataset_tag = _profile_dataset_tag(conf)
-    fixed_path = Path(conf["paths"]["manifests_dir"]) / f"fixed_test_{dataset_tag}_seed{int(seed)}.csv"
-    fixed_path.parent.mkdir(parents=True, exist_ok=True)
-    test_split.to_csv(fixed_path, index=False)
-    return str(fixed_path.resolve())
-
-
 def prepare_data_manifests(cfg: str | Path | dict[str, Any], seed: int = 1988) -> dict[str, str]:
     conf = _cfg(cfg)
     label_order = list(conf["data"]["label_order"])
     manifests = _manifest_outputs(conf, seed=seed)
-    protocol = _data_protocol(conf)
     full_df = _load_dataset_pool(conf, label_order=label_order)
 
-    if _is_benchmark(conf):
-        test_ratio = float(conf.get("data", {}).get("profile_test_ratio", conf["data"].get("test_ratio", 0.15)))
-        val_ratio_within_train = float(conf.get("data", {}).get("profile_val_ratio_within_train", conf["data"].get("val_ratio", 0.10)))
-        split_seed = int(seed)
+    test_ratio = float(conf.get("data", {}).get("profile_test_ratio", conf["data"].get("test_ratio", 0.15)))
+    val_ratio_within_train = float(conf.get("data", {}).get("profile_val_ratio_within_train", conf["data"].get("val_ratio", 0.10)))
+    split_seed = int(seed)
 
-        train_split, val_split, test_split, train_pool = _split_two_stage_stratified_pool(
-            full_df=full_df,
-            test_ratio=test_ratio,
-            val_ratio_within_train=val_ratio_within_train,
-            stratify_seed=split_seed,
-        )
-
-        train_split = train_split.assign(split="train")
-        val_split = val_split.assign(split="val")
-        test_split = test_split.assign(split="test")
-        all_full = pd.concat([train_pool.assign(split="train_pool"), test_split], ignore_index=True)
-
-        all_full.to_csv(manifests["full_data"], index=False)
-        test_split.to_csv(manifests["test_full"], index=False)
-        train_split.to_csv(manifests["train_split"], index=False)
-        val_split.to_csv(manifests["val_split"], index=False)
-
-        n_total = len(all_full)
-        summary = {
-            "protocol": protocol,
-            "seed": int(split_seed),
-            "full_data_rows": int(n_total),
-            "train_pool_rows": int(len(train_pool)),
-            "train_split_rows": int(len(train_split)),
-            "val_split_rows": int(len(val_split)),
-            "test_full_rows": int(len(test_split)),
-            "profile_test_ratio": float(test_ratio),
-            "profile_val_ratio_within_train": float(val_ratio_within_train),
-            "realized_train_ratio": float(len(train_split) / n_total) if n_total else 0.0,
-            "realized_val_ratio": float(len(val_split) / n_total) if n_total else 0.0,
-            "realized_test_ratio": float(len(test_split) / n_total) if n_total else 0.0,
-            "train_val_disjoint": bool(set(train_split["patient_id"].astype(str)).isdisjoint(set(val_split["patient_id"].astype(str)))),
-            "train_test_disjoint": bool(set(train_split["patient_id"].astype(str)).isdisjoint(set(test_split["patient_id"].astype(str)))),
-            "val_test_disjoint": bool(set(val_split["patient_id"].astype(str)).isdisjoint(set(test_split["patient_id"].astype(str)))),
-            "source_counts": {str(k): int(v) for k, v in all_full["source_dataset"].astype(str).value_counts().to_dict().items()},
-            "class_counts_train": {str(k): int(v) for k, v in train_split["class_id"].astype(int).value_counts().sort_index().to_dict().items()},
-            "class_counts_val": {str(k): int(v) for k, v in val_split["class_id"].astype(int).value_counts().sort_index().to_dict().items()},
-            "class_counts_test": {str(k): int(v) for k, v in test_split["class_id"].astype(int).value_counts().sort_index().to_dict().items()},
-        }
-        _save_json(manifests["summary"], summary)
-        return {
-            "full_data": manifests["full_data"],
-            "test_full": manifests["test_full"],
-            "train_split": manifests["train_split"],
-            "val_split": manifests["val_split"],
-        }
-
-    required_split_keys = ["train_ratio", "test_ratio", "val_ratio"]
-    missing_split_keys = [k for k in required_split_keys if k not in conf.get("data", {})]
-    if missing_split_keys:
-        raise KeyError(
-            f"Missing data split keys in config: {missing_split_keys}. "
-            "Expected data.train_ratio, data.test_ratio, data.val_ratio."
-        )
-
-    train_split, val_split, test_split = _split_train_val_test(
+    train_split, val_split, test_split, train_pool = _split_two_stage_stratified_pool(
         full_df=full_df,
-        train_ratio=float(conf["data"]["train_ratio"]),
-        test_ratio=float(conf["data"]["test_ratio"]),
-        val_ratio=float(conf["data"]["val_ratio"]),
-        stratify_seed=int(seed),
+        test_ratio=test_ratio,
+        val_ratio_within_train=val_ratio_within_train,
+        stratify_seed=split_seed,
     )
-    train_split = train_split.reset_index(drop=True)
-    val_split = val_split.reset_index(drop=True)
-    test_split = test_split.reset_index(drop=True)
-    all_full = pd.concat([train_split, val_split, test_split], ignore_index=True)
 
     train_split = train_split.assign(split="train")
     val_split = val_split.assign(split="val")
     test_split = test_split.assign(split="test")
+    all_full = pd.concat([train_pool.assign(split="train_pool"), test_split], ignore_index=True)
 
     all_full.to_csv(manifests["full_data"], index=False)
     test_split.to_csv(manifests["test_full"], index=False)
@@ -571,22 +415,19 @@ def prepare_data_manifests(cfg: str | Path | dict[str, Any], seed: int = 1988) -
     val_split.to_csv(manifests["val_split"], index=False)
 
     n_total = len(all_full)
-    realized_train = float(len(train_split) / n_total) if n_total else 0.0
-    realized_val = float(len(val_split) / n_total) if n_total else 0.0
-    realized_test = float(len(test_split) / n_total) if n_total else 0.0
     summary = {
-        "protocol": protocol,
-        "seed": int(seed),
+        "protocol": "benchmark",
+        "seed": int(split_seed),
         "full_data_rows": int(n_total),
+        "train_pool_rows": int(len(train_pool)),
         "train_split_rows": int(len(train_split)),
         "val_split_rows": int(len(val_split)),
         "test_full_rows": int(len(test_split)),
-        "config_train_ratio": float(conf["data"]["train_ratio"]),
-        "config_val_ratio": float(conf["data"]["val_ratio"]),
-        "config_test_ratio": float(conf["data"]["test_ratio"]),
-        "realized_train_ratio": realized_train,
-        "realized_val_ratio": realized_val,
-        "realized_test_ratio": realized_test,
+        "profile_test_ratio": float(test_ratio),
+        "profile_val_ratio_within_train": float(val_ratio_within_train),
+        "realized_train_ratio": float(len(train_split) / n_total) if n_total else 0.0,
+        "realized_val_ratio": float(len(val_split) / n_total) if n_total else 0.0,
+        "realized_test_ratio": float(len(test_split) / n_total) if n_total else 0.0,
         "train_val_disjoint": bool(set(train_split["patient_id"].astype(str)).isdisjoint(set(val_split["patient_id"].astype(str)))),
         "train_test_disjoint": bool(set(train_split["patient_id"].astype(str)).isdisjoint(set(test_split["patient_id"].astype(str)))),
         "val_test_disjoint": bool(set(val_split["patient_id"].astype(str)).isdisjoint(set(test_split["patient_id"].astype(str)))),
@@ -596,7 +437,6 @@ def prepare_data_manifests(cfg: str | Path | dict[str, Any], seed: int = 1988) -
         "class_counts_test": {str(k): int(v) for k, v in test_split["class_id"].astype(int).value_counts().sort_index().to_dict().items()},
     }
     _save_json(manifests["summary"], summary)
-
     return {
         "full_data": manifests["full_data"],
         "test_full": manifests["test_full"],
@@ -826,30 +666,18 @@ def _to_ratio_fraction(value: Any, key: str) -> float:
 
 
 def _split_policy_tag(conf: dict[str, Any]) -> str:
-    data_cfg = conf.get("data", {})
-    if _is_benchmark(conf):
-        del data_cfg
-        return _profile_profile_tag(conf)
-    train_ratio = _to_ratio_fraction(data_cfg.get("train_ratio", 0.75), "train_ratio")
-    test_ratio = _to_ratio_fraction(data_cfg.get("test_ratio", 0.15), "test_ratio")
-    val_ratio = _to_ratio_fraction(data_cfg.get("val_ratio", 0.10), "val_ratio")
-    return f"{int(round(train_ratio * 100))}-{int(round(test_ratio * 100))}-{int(round(val_ratio * 100))}"
+    return _profile_profile_tag(conf)
 
 
 def _table_path(conf: dict[str, Any], stem: str, seed: int | None = None, split: str | None = None, ext: str = "csv") -> Path:
     base = Path(conf["paths"]["tables_dir"])
-    if _is_benchmark(conf):
-        parts = [str(stem)]
-        if seed is not None:
-            parts.append(f"seed{int(seed)}")
-        if split:
-            parts.append(str(split))
-        parts.append(_profile_profile_tag(conf))
-        return base / f"{'_'.join(parts)}.{ext}"
-
-    seed_part = f"_seed{int(seed)}" if seed is not None else ""
-    split_part = f"_{split}" if split else ""
-    return base / f"{stem}{seed_part}{split_part}.{ext}"
+    parts = [str(stem)]
+    if seed is not None:
+        parts.append(f"seed{int(seed)}")
+    if split:
+        parts.append(str(split))
+    parts.append(_profile_profile_tag(conf))
+    return base / f"{'_'.join(parts)}.{ext}"
 
 
 def notebook_prepare_data_overview(
