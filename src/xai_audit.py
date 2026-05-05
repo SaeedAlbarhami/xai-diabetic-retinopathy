@@ -658,55 +658,33 @@ def run_xai_analysis(
             columns=["gradcam_layer", "composite_score", "mean_aopc_delta", "mean_border_ratio", "n_rows"],
         ).to_csv(layer_summary_path, index=False)
 
+        gradcam_status_payload = {
+            "seed": int(seed),
+            "run_id": run_id,
+            "split": split,
+            "backbone": backbone,
+            "requested_layers": gradcam_layers_eval,
+            "supported_layers": supported_layers,
+            "unsupported_layers": unsupported_layers,
+            "errors": layer_errors,
+            "selected_layer": selected_layer,
+            "pass_rule_border_ratio_max": float(pass_border_ratio_max),
+            "pass_rule_faith_delta_k20_min": float(pass_faith_delta_min),
+            "evaluation_scope": evaluation_scope,
+            "shared_targets_enforced": bool(enforce_consistent_targets),
+            "target_rows": int(len(xai_target_df)),
+        }
         if len(grad_rows) == 0:
             reason = "No Grad-CAM rows were produced from supported layers."
             if layer_errors:
                 reason = f"{reason} Errors: {layer_errors}"
-            _save_json(
-                gradcam_status_path,
-                {
-                    "status": "failed",
-                    "seed": int(seed),
-                    "run_id": run_id,
-                    "split": split,
-                    "backbone": backbone,
-                    "requested_layers": gradcam_layers_eval,
-                    "supported_layers": supported_layers,
-                    "unsupported_layers": unsupported_layers,
-                    "errors": layer_errors,
-                    "selected_layer": selected_layer,
-                    "reason": reason,
-                    "pass_rule_border_ratio_max": float(pass_border_ratio_max),
-                    "pass_rule_faith_delta_k20_min": float(pass_faith_delta_min),
-                    "evaluation_scope": evaluation_scope,
-                    "shared_targets_enforced": bool(enforce_consistent_targets),
-                    "target_rows": int(len(xai_target_df)),
-                },
-            )
+            gradcam_status_payload.update({"status": "failed", "reason": reason})
+            _save_json(gradcam_status_path, gradcam_status_payload)
             gradcam_status_note = f"failed: {reason}"
         else:
             status = "success" if len(layer_errors) == 0 and len(unsupported_layers) == 0 else "partial_success"
-            _save_json(
-                gradcam_status_path,
-                {
-                    "status": status,
-                    "seed": int(seed),
-                    "run_id": run_id,
-                    "split": split,
-                    "backbone": backbone,
-                    "requested_layers": gradcam_layers_eval,
-                    "supported_layers": supported_layers,
-                    "unsupported_layers": unsupported_layers,
-                    "errors": layer_errors,
-                    "selected_layer": selected_layer,
-                    "rows": int(len(grad_rows)),
-                    "pass_rule_border_ratio_max": float(pass_border_ratio_max),
-                    "pass_rule_faith_delta_k20_min": float(pass_faith_delta_min),
-                    "evaluation_scope": evaluation_scope,
-                    "shared_targets_enforced": bool(enforce_consistent_targets),
-                    "target_rows": int(len(xai_target_df)),
-                },
-            )
+            gradcam_status_payload.update({"status": status, "rows": int(len(grad_rows))})
+            _save_json(gradcam_status_path, gradcam_status_payload)
             gradcam_status_note = status
 
     rq1_df = pd.DataFrame(
@@ -897,49 +875,30 @@ def run_xai_analysis(
     except Exception as exc:
         shap_error = str(exc)
 
+    shap_status_payload = {
+        "seed": int(seed),
+        "run_id": run_id,
+        "split": split,
+        "mode": str(shap_mode) if shap_error else use_mode,
+        "attempted_device": shap_attempted_device,
+        "final_device": shap_final_device,
+        "fallback_used": bool(shap_fallback_used),
+        "error_primary": str(shap_error_primary),
+        "pass_rule_border_ratio_max": float(pass_border_ratio_max),
+        "pass_rule_faith_delta_k20_min": float(pass_faith_delta_min),
+        "evaluation_scope": evaluation_scope,
+        "shared_targets_enforced": bool(enforce_consistent_targets),
+        "target_rows": int(len(xai_target_df)),
+    }
     if shap_error:
-        _save_json(
-            shap_status_path,
-            {
-                "status": "failed",
-                "seed": int(seed),
-                "run_id": run_id,
-                "split": split,
-                "mode": str(shap_mode),
-                "error": str(shap_error),
-                "attempted_device": shap_attempted_device,
-                "final_device": shap_final_device,
-                "fallback_used": bool(shap_fallback_used),
-                "error_primary": str(shap_error_primary),
-                "pass_rule_border_ratio_max": float(pass_border_ratio_max),
-                "pass_rule_faith_delta_k20_min": float(pass_faith_delta_min),
-                "evaluation_scope": evaluation_scope,
-                "shared_targets_enforced": bool(enforce_consistent_targets),
-                "target_rows": int(len(xai_target_df)),
-            },
-        )
+        shap_status_payload["status"] = "failed"
+        shap_status_payload["error"] = str(shap_error)
+        _save_json(shap_status_path, shap_status_payload)
         shap_status_note = f"failed: {shap_error}"
     else:
-        _save_json(
-            shap_status_path,
-            {
-                "status": "success",
-                "seed": int(seed),
-                "run_id": run_id,
-                "split": split,
-                "mode": use_mode,
-                "samples": int(len(shap_rows)),
-                "attempted_device": shap_attempted_device,
-                "final_device": shap_final_device,
-                "fallback_used": bool(shap_fallback_used),
-                "error_primary": str(shap_error_primary),
-                "pass_rule_border_ratio_max": float(pass_border_ratio_max),
-                "pass_rule_faith_delta_k20_min": float(pass_faith_delta_min),
-                "evaluation_scope": evaluation_scope,
-                "shared_targets_enforced": bool(enforce_consistent_targets),
-                "target_rows": int(len(xai_target_df)),
-            },
-        )
+        shap_status_payload["status"] = "success"
+        shap_status_payload["samples"] = int(len(shap_rows))
+        _save_json(shap_status_path, shap_status_payload)
         shap_status_note = "success_cpu_fallback" if shap_fallback_used else "success"
 
     total_elapsed_m = (time.time() - xai_start_time) / 60.0
