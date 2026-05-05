@@ -1,8 +1,4 @@
-"""Rendering helpers for overlays and per-class attribution grids.
-
-Only does image math and matplotlib drawing — no model calls, no config
-reads. Used by the Grad-CAM and SHAP modules to draw their figures.
-"""
+"""Image overlays and per-class attribution grid rendering."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -74,13 +70,6 @@ def _plot_attribution_grid(
     save_path: str | Path | None = None,
     dpi: int = 180,
 ) -> plt.Figure:
-    """Render a shared (nrows x (1+num_classes)) attribution grid.
-
-    Each row in ``rows_data`` must carry: ``image_pil``, ``pred_class``,
-    ``confidence``, ``class_maps`` (length ``num_classes``), and optionally
-    ``true_class``. Used by both :func:`plot_shap_grid` and
-    :func:`plot_gradcam_class_grid` so the two methods render identically.
-    """
     nrows = len(rows_data)
     ncols = 1 + int(num_classes)
     panel_w = max(1.5, float(panel_size[0]))

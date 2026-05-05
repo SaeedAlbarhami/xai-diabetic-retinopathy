@@ -185,10 +185,6 @@ def _class_name_from_id(class_id: int, label_order: list[str]) -> str:
     return str(label_order[cid])
 
 
-def _normalize_label_token(raw: str) -> str:
-    return "".join(ch.lower() for ch in str(raw).strip() if ch.isalnum())
-
-
 def _parse_aptos_csv(
     csv_path: str | Path,
     image_dir: str | Path,

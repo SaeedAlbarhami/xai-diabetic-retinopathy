@@ -1,9 +1,4 @@
-"""Statistical helpers for the XAI audit.
-
-Paired Wilcoxon signed-rank, paired t-test, McNemar (exact + chi-square),
-and a bootstrap CI for pass rates. Pure math over numpy and pandas —
-no model calls, no disk I/O.
-"""
+"""Paired Wilcoxon, paired t-test, McNemar (exact + chi-square), and bootstrap pass-rate CI."""
 from __future__ import annotations
 
 import math
@@ -66,15 +61,6 @@ def _mcnemar_chi2_approx(n01: int, n10: int, yates: bool = True) -> tuple[float,
 
 
 def _build_xai_continuous_stats(rq1_df: pd.DataFrame, rq2_df: pd.DataFrame) -> pd.DataFrame:
-    """Research-standard paired continuous-score comparison.
-
-    Computes Wilcoxon signed-rank test, paired t-test, and Cohen's dz on each
-    continuous XAI metric (border_ratio, retina_ratio, faith_delta_k10/20/30,
-    aopc_delta) between Grad-CAM and SHAP. This is the primary comparison used
-    in the XAI literature (Samek et al. 2017 AOPC; Petsiuk et al. 2018 RISE
-    Insertion/Deletion; Yeh et al. 2019 Infidelity) and avoids the arbitrary
-    thresholds required by a binary pass/fail rule.
-    """
     try:
         from scipy.stats import ttest_rel, wilcoxon
     except ImportError:

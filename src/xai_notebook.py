@@ -1,9 +1,4 @@
-"""Thin wrappers the project demo notebook calls for each XAI section.
-
-Each ``notebook_*`` function composes the audit, single-case, or visual
-review pipelines and returns display-ready markdown, DataFrames, and
-matplotlib figures that the notebook just hands to ``display(...)``.
-"""
+"""Notebook entry points for each XAI section: audit, committee summary, advanced audit, visual review, single case."""
 from __future__ import annotations
 
 import copy
@@ -16,24 +11,18 @@ import pandas as pd
 
 from src.data import (
     _cfg,
-    _class_name_from_id,
     _load_json,
-    _manifest_path,
-    _table_path,
     prepare_data_manifests,
 )
 from src.train import (
     _gradcam_status_log_path,
     _load_latest_run_record,
-    _predictions_path_for_run_id,
     _shap_status_log_path,
     build_validation_calibration_table,
 )
 from src.xai_audit import (
     _format_continuous_bottom_line,
     _format_continuous_table_for_display,
-    _parse_gradcam_layers,
-    _xai_pass_rule_thresholds,
     run_xai_analysis,
 )
 from src.xai_gradcam import plot_gradcam_grid

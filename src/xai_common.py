@@ -1,9 +1,4 @@
-"""Small runtime helpers shared by the Grad-CAM and SHAP modules.
-
-Device resolution, a temperature-scaled single-image predict, and a
-calibration-temperature lookup. Kept in one leaf module so the compute
-modules can share them without importing each other.
-"""
+"""Device resolution, temperature-scaled single-image prediction, calibration-temperature lookup."""
 from __future__ import annotations
 
 from typing import Any

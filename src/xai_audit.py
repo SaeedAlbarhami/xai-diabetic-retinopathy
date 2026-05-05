@@ -1,99 +1,54 @@
-"""Aggregate XAI audit: per-sample loops and summary tables.
-
-``run_xai_analysis`` is the big orchestrator — it iterates Grad-CAM and
-SHAP over the 120 audit targets, applies the retinal-disc mask, and
-writes the per-sample CSVs. The ``_build_xai_*`` family assembles the
-aggregate tables that show up in the report: method stats, pairwise
-McNemar, continuous paired tests, per-class and per-correctness
-breakdowns.
-"""
+"""XAI audit pipeline: per-sample Grad-CAM and SHAP loops plus aggregate tables."""
 from __future__ import annotations
 
-import copy
 import gc
-import hashlib
-import json
-import os
-import random
-import shutil
 import time
-import warnings
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-import matplotlib.patches as mpatches
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from PIL import Image
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
 
 try:
     import shap
-except Exception as exc:  # pragma: no cover
+except ImportError:
     shap = None
-    _SHAP_IMPORT_ERROR = exc
-else:
-    _SHAP_IMPORT_ERROR = None
 
 try:
-    from captum.attr import LayerAttribution, LayerGradCam
-except Exception as exc:  # pragma: no cover
-    LayerAttribution = None
+    from captum.attr import LayerGradCam
+except ImportError:
     LayerGradCam = None
-    _CAPTUM_IMPORT_ERROR = exc
-else:
-    _CAPTUM_IMPORT_ERROR = None
 
 from src.data import (
-    _apply_fundus_preprocessing,
     _backbone_name,
     _cfg,
-    _class_name_from_id,
     _load_image_for_inference,
-    _load_json,
-    _manifest_path,
     _model_image_size,
     _save_json,
-    _set_seed,
-    _table_path,
-    load_project_config,
-    prepare_data_manifests,
 )
 from src.train import (
-    DRClassifier,
-    _LogitWrapper,
-    _calibration_path_for_run_id,
     _gradcam_status_log_path,
     _load_model,
-    _predictions_path_for_run_id,
     _resolve_checkpoint_and_run_id,
     _save_latest_run_record,
     _shap_status_log_path,
     run_split_inference,
 )
 from src.xai_common import (
-    _predict_one_with_temperature,
     _resolve_xai_device,
-    _temperature_for_run,
 )
 from src.xai_gradcam import (
     _generate_gradcam,
-    _gradcam_heatmap_for_display,
     _resolve_gradcam_target_layer,
 )
 from src.xai_metrics import (
     _attribution_mass_ratios,
     _attribution_retina_mask,
-    _border_mask,
     _faithfulness_delta,
     _faithfulness_multi_k,
     _k_to_col_name,
     _parse_faithfulness_k_list,
-    _retina_circle_mask,
 )
 from src.xai_shap import (
     _build_shap_explainer_with_known_warning_filter,
@@ -111,10 +66,7 @@ from src.xai_stats import (
     _xai_pass_flag,
 )
 from src.xai_viz import (
-    _normalize_map,
-    _overlay,
     _save_map_overlay,
-    _save_overlay_image,
 )
 
 
@@ -480,11 +432,8 @@ def run_xai_analysis(
         torch.cuda.empty_cache()
         torch.cuda.ipc_collect()
     _empty_mps_cache_if_available()
-    if _CAPTUM_IMPORT_ERROR is not None:
-        raise RuntimeError(
-            f"captum is required for Grad-CAM audit but failed to import: "
-            f"{_CAPTUM_IMPORT_ERROR}. Install with `pip install captum==0.7.0`."
-        )
+    if LayerGradCam is None:
+        raise RuntimeError("captum is required for Grad-CAM audit. Install with `pip install captum==0.7.0`.")
     conf = _cfg(cfg)
     device = _resolve_xai_device(conf)
     image_size = _model_image_size(conf)
@@ -502,21 +451,10 @@ def run_xai_analysis(
     xai_log_every_samples = int(xai_cfg.get("log_every_samples", 16))
     xai_start_time = time.time()
 
-    if checkpoint is None:
-        ckpt_path, run_id = _resolve_checkpoint_and_run_id(conf, seed=seed, checkpoint=None, require_existing=True)
-    else:
-        ckpt_path, run_id = _resolve_checkpoint_and_run_id(
-            conf,
-            seed=seed,
-            checkpoint=checkpoint,
-            require_existing=True,
-        )
+    ckpt_path, run_id = _resolve_checkpoint_and_run_id(conf, seed=seed, checkpoint=checkpoint, require_existing=True)
     _save_latest_run_record(conf, seed=seed, run_id=run_id, checkpoint_path=ckpt_path)
 
-    if predictions_csv is None:
-        pred_path = Path(run_split_inference(conf, seed=seed, split=split))
-    else:
-        pred_path = Path(predictions_csv)
+    pred_path = Path(predictions_csv) if predictions_csv else Path(run_split_inference(conf, seed=seed, split=split))
 
     pred_df = pd.read_csv(pred_path)
     high_conf_thr = float(conf["evaluation"].get("high_conf_threshold", 0.80))
@@ -562,7 +500,6 @@ def run_xai_analysis(
 
     model = _load_model(conf, seed, device, checkpoint=ckpt_path)
 
-    # Grad-CAM (RQ1)
     grad_rows: list[dict[str, Any]] = []
     grad_dir = Path(conf["paths"]["figures_dir"]) / "gradcam"
     grad_dir.mkdir(parents=True, exist_ok=True)
@@ -813,7 +750,6 @@ def run_xai_analysis(
     rq1_path = Path(conf["paths"]["tables_dir"]) / f"rq1_gradcam_seed{seed}_{split}.csv"
     rq1_df.to_csv(rq1_path, index=False)
 
-    # SHAP (RQ2)
     shap_rows: list[dict[str, Any]] = []
     shap_status_path = _shap_status_log_path(conf, run_id, split)
     shap_status_note = ""
@@ -824,8 +760,8 @@ def run_xai_analysis(
     shap_error = ""
 
     try:
-        if _SHAP_IMPORT_ERROR is not None:
-            raise RuntimeError(f"shap import failed: {_SHAP_IMPORT_ERROR}")
+        if shap is None:
+            raise RuntimeError("shap is required for SHAP audit. Install with `pip install shap==0.47.2`.")
 
         bg_size = int(xai_cfg.get("shap_background_size", 64))
         shap_score_mode = str(xai_cfg.get("shap_score_mode", "positive")).strip().lower()
@@ -1136,18 +1072,8 @@ def run_xai_analysis(
     continuous_path = Path(conf["paths"]["tables_dir"]) / f"rq_xai_continuous_seed{seed}_{split}.csv"
     continuous_df.to_csv(continuous_path, index=False)
 
-    # ProtoPNet future-phase stub
-    proto_stub = pd.DataFrame(
-        [
-            {
-                "method": "ProtoPNetLite",
-                "status": "planned_future_phase",
-                "reason": "Planned future extension outside current implementation scope",
-            }
-        ]
-    )
     proto_stub_path = Path(conf["paths"]["tables_dir"]) / f"protopnet_stub_seed{seed}_{split}.csv"
-    proto_stub.to_csv(proto_stub_path, index=False)
+    pd.DataFrame([{"method": "ProtoPNetLite", "status": "planned_future_phase", "reason": "Planned future extension"}]).to_csv(proto_stub_path, index=False)
 
     return {
         "run_id": run_id,

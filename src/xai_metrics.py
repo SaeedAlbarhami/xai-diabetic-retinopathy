@@ -1,13 +1,4 @@
-"""Per-sample metrics computed on a single attribution map.
-
-Includes the retinal-disc mask and the 10% border ring, the attribution
-mass ratios (border ratio and retina ratio), and the faithfulness delta
-at one or more k values (with AOPC as the mean across k).
-
-The faithfulness helpers do run the model on masked inputs, but they
-operate on one sample at a time, so they sit with the other per-sample
-metric helpers.
-"""
+"""Per-sample attribution-map metrics: retinal-disc mask, border ratio, retina ratio, faithfulness delta, AOPC."""
 from __future__ import annotations
 
 from typing import Any

@@ -1,9 +1,4 @@
-"""Grad-CAM: compute and plotting.
-
-Resolves the target layer for the chosen backbone, runs Grad-CAM via
-captum, and draws the two report figures — the 4-case demo grid and the
-single-case class-conditional grid.
-"""
+"""Grad-CAM computation and the report figure grids."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -19,12 +14,9 @@ import torch.nn as nn
 
 try:
     from captum.attr import LayerAttribution, LayerGradCam
-except Exception as exc:  # pragma: no cover
+except ImportError:
     LayerAttribution = None
     LayerGradCam = None
-    _CAPTUM_IMPORT_ERROR = exc
-else:
-    _CAPTUM_IMPORT_ERROR = None
 
 from src.data import (
     _backbone_name,
@@ -122,8 +114,8 @@ def _generate_gradcam(
     overlay_dpi: int = 180,
     backbone_hint: str = "",
 ) -> tuple[str, np.ndarray, np.ndarray]:
-    if _CAPTUM_IMPORT_ERROR is not None:
-        raise RuntimeError(f"captum import failed: {_CAPTUM_IMPORT_ERROR}")
+    if LayerGradCam is None:
+        raise RuntimeError("captum is required for Grad-CAM. Install with `pip install captum==0.7.0`.")
 
     model.eval()
     target_layer, resolved_layer_name, reason = _resolve_gradcam_target_layer(
@@ -168,8 +160,8 @@ def _gradcam_heatmap_for_display(
     device: torch.device,
     backbone_hint: str = "",
 ) -> np.ndarray:
-    if _CAPTUM_IMPORT_ERROR is not None:
-        raise RuntimeError(f"captum import failed: {_CAPTUM_IMPORT_ERROR}")
+    if LayerGradCam is None:
+        raise RuntimeError("captum is required for Grad-CAM. Install with `pip install captum==0.7.0`.")
 
     target_layer, _, reason = _resolve_gradcam_target_layer(
         model=model,
@@ -206,10 +198,6 @@ def plot_gradcam_grid(
     save_path: str | Path | None = None,
     dpi: int | None = None,
 ) -> plt.Figure:
-    """
-    Publication-style Grad-CAM grid:
-    [Original | Grad-CAM] pairs with green/red border by correctness.
-    """
     if len(samples) == 0:
         raise ValueError("samples must not be empty")
 
@@ -353,14 +341,8 @@ def plot_gradcam_class_grid(
     show_correctness_border: bool = False,
     panel_size: tuple[float, float] | None = None,
 ) -> plt.Figure:
-    """
-    Plot class-conditional Grad-CAM per class for each input image.
-    Layout: one row per image, columns [original, class0, class1, ...].
-    Shares the renderer used by :func:`plot_shap_grid` so both methods appear
-    at identical scale and styling.
-    """
-    if _CAPTUM_IMPORT_ERROR is not None:
-        raise RuntimeError(f"captum import failed: {_CAPTUM_IMPORT_ERROR}")
+    if LayerGradCam is None:
+        raise RuntimeError("captum is required for Grad-CAM. Install with `pip install captum==0.7.0`.")
     if len(image_paths) == 0:
         raise ValueError("image_paths must not be empty")
     if true_classes is not None and len(true_classes) != len(image_paths):

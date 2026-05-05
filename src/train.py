@@ -21,34 +21,19 @@ from sklearn.metrics import (
     recall_score,
     roc_auc_score,
 )
-from sklearn.model_selection import train_test_split
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
-import torchvision.transforms as T
+from torch.utils.data import DataLoader, WeightedRandomSampler
 from torchvision.models import EfficientNet_B4_Weights, ResNet50_Weights, ViT_B_16_Weights, efficientnet_b4, resnet50, vit_b_16
-from torchvision.models.efficientnet import FusedMBConv, MBConv
-from torchvision.models.resnet import BasicBlock, Bottleneck
-
-import yaml
 
 from src.data import (
-    load_project_config,
     _cfg,
     _save_json,
     _load_json,
     _write_alias_copy,
     _set_seed,
     _resolve_device,
-    _load_dataset_pool,
-    _slug_token,
-    _profile_dataset_tag,
-    _profile_split_tag,
-    _profile_profile_tag,
-    _manifest_suffix,
-    _manifest_filename_map,
-    _manifest_outputs,
     prepare_data_manifests,
     _FundusDataset,
     _manifest_path,

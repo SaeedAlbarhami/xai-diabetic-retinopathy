@@ -1,13 +1,4 @@
-"""SHAP DeepExplainer: compute and plotting.
-
-Includes forward-pass patches for ResNet Bottleneck / BasicBlock and
-EfficientNet MBConv / FusedMBConv so DeepSHAP can backprop through them
-without hitting the in-place-view error on MPS or CUDA, plus the MPS/CUDA
-error classifiers that drive the automatic CPU fallback.
-
-``plot_shap_grid`` is the public per-class SHAP attribution grid used by
-the single-case report figure and by the audit's visual review.
-"""
+"""SHAP DeepExplainer with backbone forward-pass patches and the per-class attribution grid."""
 from __future__ import annotations
 
 import gc
@@ -16,9 +7,9 @@ import warnings
 from pathlib import Path
 from typing import Any
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from PIL import Image
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -27,13 +18,8 @@ from torchvision.models.resnet import BasicBlock, Bottleneck
 
 try:
     import shap
-except Exception as exc:  # pragma: no cover
+except ImportError:
     shap = None
-    _SHAP_IMPORT_ERROR = exc
-else:
-    _SHAP_IMPORT_ERROR = None
-
-import matplotlib.pyplot as plt
 
 from src.data import (
     _cfg,
@@ -252,12 +238,8 @@ def plot_shap_grid(
     show_correctness_border: bool = False,
     panel_size: tuple[float, float] | None = None,
 ) -> plt.Figure:
-    """
-    Plot SHAP per class for each input image.
-    Layout: one row per image, columns [original, class0, class1, ...].
-    """
-    if _SHAP_IMPORT_ERROR is not None or shap is None:
-        raise RuntimeError(f"shap import failed: {_SHAP_IMPORT_ERROR}")
+    if shap is None:
+        raise RuntimeError("shap is required. Install with `pip install shap==0.47.2`.")
     if len(image_paths) == 0:
         raise ValueError("image_paths must not be empty")
     if true_classes is not None and len(true_classes) != len(image_paths):

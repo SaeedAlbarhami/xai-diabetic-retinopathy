@@ -1,19 +1,7 @@
-"""End-to-end single-image XAI demo.
-
-Three entry points at different levels of detail:
-
-* ``predict_single_image_with_explanations`` — quick prediction plus
-  Grad-CAM and SHAP on one image.
-* ``explain_single_image_detailed`` — full per-layer Grad-CAM and SHAP
-  with per-case metrics.
-* ``run_single_case_demo`` — renders the report figures 11a and 11b and
-  the supporting metrics table for the chosen sample.
-"""
+"""Single-image XAI demo: quick prediction, detailed per-layer explanations, and report-figure rendering."""
 from __future__ import annotations
 
-import copy
 import gc
-import json
 from pathlib import Path
 from typing import Any
 
@@ -24,16 +12,12 @@ from PIL import Image
 import torch
 
 from src.data import (
-    _apply_fundus_preprocessing,
     _backbone_name,
     _cfg,
-    _class_name_from_id,
     _load_image_for_inference,
     _load_json,
     _manifest_path,
     _model_image_size,
-    _save_json,
-    load_project_config,
     prepare_data_manifests,
 )
 from src.train import (
@@ -43,20 +27,16 @@ from src.train import (
     _resolve_checkpoint_and_run_id,
 )
 from src.xai_common import (
-    _predict_one_with_temperature,
     _resolve_xai_device,
-    _temperature_for_run,
 )
 from src.xai_gradcam import (
     _generate_gradcam,
-    _gradcam_heatmap_for_display,
     plot_gradcam_class_grid,
 )
 from src.xai_metrics import (
     _attribution_mass_ratios,
     _attribution_retina_mask,
     _faithfulness_multi_k,
-    _parse_faithfulness_k_list,
 )
 from src.xai_shap import (
     _build_shap_explainer_with_known_warning_filter,
@@ -73,93 +53,15 @@ from src.xai_viz import _save_map_overlay
 
 try:
     import shap
-except Exception as exc:  # pragma: no cover
+except ImportError:
     shap = None
-    _SHAP_IMPORT_ERROR = exc
-else:
-    _SHAP_IMPORT_ERROR = None
 
 try:
-    from captum.attr import LayerAttribution, LayerGradCam
-except Exception as exc:  # pragma: no cover
-    LayerAttribution = None
+    from captum.attr import LayerGradCam
+except ImportError:
     LayerGradCam = None
-    _CAPTUM_IMPORT_ERROR = exc
-else:
-    _CAPTUM_IMPORT_ERROR = None
 
-from src.xai_audit import _xai_pass_rule_thresholds, _parse_gradcam_layers
-
-
-def predict_single_image_with_explanations(cfg_path: str | Path = "configs/base.yaml", seed: int = 1988, image_path: str = "") -> dict[str, Any]:
-    conf = _cfg(cfg_path)
-    if not image_path:
-        raise ValueError("image_path is required")
-
-    device = _resolve_xai_device(conf)
-    image_size = _model_image_size(conf)
-    backbone = _backbone_name(conf)
-    fig_dpi = int(conf.get("xai", {}).get("figure_dpi", 180))
-    ckpt_path, run_id = _resolve_checkpoint_and_run_id(conf, seed=seed, checkpoint=None, require_existing=True)
-    calibration_path = _calibration_path_for_run_id(conf, run_id)
-    if not calibration_path.exists():
-        raise FileNotFoundError(f"Calibration table not found: {calibration_path}. Run calibration first.")
-
-    model = _load_model(conf, seed, device, checkpoint=ckpt_path)
-    calibration_payload = _load_json(calibration_path)
-    temperature = float(calibration_payload.get("temperature", 1.0))
-
-    image, tensor = _load_image_for_inference(
-        image_path,
-        image_size=image_size,
-        preprocessing_cfg=conf.get("preprocessing", {}),
-    )
-    tensor = tensor.to(device)
-
-    with torch.no_grad():
-        logits = model(tensor)
-        logits = logits / max(1e-4, temperature)
-        probs = torch.softmax(logits, dim=1)
-        conf_score, pred = torch.max(probs, dim=1)
-
-    confidence = float(conf_score.item())
-    pred_class = int(pred.item())
-
-    artifact = ""
-    warning_message = ""
-    try:
-        out_path = Path(conf["paths"]["figures_dir"]) / "single" / f"{Path(image_path).stem}_gradcam.png"
-        artifact, _, _ = _generate_gradcam(
-            model=model,
-            input_tensor=tensor,
-            original_image=np.array(image),
-            class_id=pred_class,
-            layer_name=str(conf["xai"].get("gradcam_layer", "layer4")),
-            output_path=out_path,
-            device=device,
-            conf=conf,
-            overlay_dpi=fig_dpi,
-            backbone_hint=backbone,
-        )
-    except Exception as exc:
-        warning_message = f"Grad-CAM unavailable for backbone={backbone}: {exc}"
-
-    result: dict[str, Any] = {
-        "image_path": str(image_path),
-        "seed": int(seed),
-        "run_id": run_id,
-        "device": str(device),
-        "pred_class": pred_class,
-        "confidence": confidence,
-        "artifact_path": artifact,
-        "warning_message": warning_message,
-    }
-
-    probs_list = probs.squeeze(0).detach().cpu().numpy().tolist()
-    for i, p in enumerate(probs_list):
-        result[f"prob_{i}"] = float(p)
-
-    return result
+from src.xai_audit import _xai_pass_rule_thresholds
 
 
 def explain_single_image_detailed(
@@ -284,8 +186,8 @@ def explain_single_image_detailed(
     }
 
     try:
-        if _SHAP_IMPORT_ERROR is not None:
-            raise RuntimeError(f"shap import failed: {_SHAP_IMPORT_ERROR}")
+        if shap is None:
+            raise RuntimeError("shap is required for SHAP attribution. Install with `pip install shap==0.47.2`.")
 
         bg_size = int(shap_background_size or conf["xai"].get("shap_background_size", 64))
         bg_size = max(1, bg_size)
@@ -437,13 +339,6 @@ def run_single_case_demo(
     shap_panel_size: tuple[float, float] = (3.2, 3.6),
     shap_dpi: int | None = None,
 ) -> dict[str, Any]:
-    """
-    Run a compact single-case demo flow for notebooks:
-    1) pick one image (or use provided image_path),
-    2) run detailed Grad-CAM + SHAP,
-    3) export Grad-CAM panel and SHAP class grid,
-    4) return a concise summary payload.
-    """
     conf = _cfg(cfg_path)
     split_key = str(split).strip().lower() or "test"
     if split_key not in {"train", "val", "test"}:
