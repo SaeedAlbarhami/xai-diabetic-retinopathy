@@ -43,63 +43,21 @@ from src.xai_viz import (
 )
 
 
-def _infer_backbone_from_model(model: nn.Module) -> str:
-    net = getattr(model, "net", model)
-    if all(hasattr(net, name) for name in ["layer2", "layer3", "layer4"]):
-        return "resnet50"
-    if hasattr(net, "features") and isinstance(getattr(net, "features"), nn.Sequential):
-        return "efficientnet_b4"
-    if hasattr(net, "heads"):
-        return "vit_b16"
-    return net.__class__.__name__.strip().lower()
-
-
 def _resolve_gradcam_target_layer(
     model: DRClassifier,
     layer_name: str,
     backbone_hint: str = "",
 ) -> tuple[nn.Module | None, str, str]:
     layer_key = str(layer_name).strip().lower()
-    allowed = {"layer2", "layer3", "layer4"}
-    if layer_key not in allowed:
+    if layer_key not in {"layer2", "layer3", "layer4"}:
         return None, "", f"Unsupported gradcam layer '{layer_name}'. Supported layers: layer2, layer3, layer4"
 
-    net = model.net
-    backbone = str(backbone_hint).strip().lower() or _infer_backbone_from_model(model)
-    if backbone.startswith("vit"):
-        return None, "", f"Grad-CAM requires CNN feature maps; backbone={backbone} is not supported."
-
-    # ResNet-family mapping (explicit named stages).
-    if all(hasattr(net, name) for name in ["layer2", "layer3", "layer4"]):
-        target = getattr(net, layer_key, None)
-        if target is not None:
-            return target, f"net.{layer_key}", ""
-
-    # EfficientNet family mapping (explicit feature stages requested by design).
-    if hasattr(net, "features") and isinstance(getattr(net, "features"), nn.Sequential):
-        stage_map = {"layer2": 4, "layer3": 6, "layer4": 8}
-        features = net.features
-        req_idx = int(stage_map[layer_key])
-        if len(features) > 0:
-            idx = req_idx if req_idx < len(features) else int(round((req_idx / 8.0) * (len(features) - 1)))
-            idx = int(min(max(idx, 0), len(features) - 1))
-            return features[idx], f"net.features.{idx}", ""
-
-    # Generic CNN fallback: map layer2/3/4 to early/mid/late Conv2d stages.
-    conv_layers = [(name, module) for name, module in net.named_modules() if isinstance(module, nn.Conv2d)]
-    if len(conv_layers) == 0:
-        return None, "", "Grad-CAM requires at least one Conv2d spatial layer."
-
-    n_conv = len(conv_layers)
-    idx_map = {
-        "layer2": int(min(max(round(n_conv * 0.33) - 1, 0), n_conv - 1)),
-        "layer3": int(min(max(round(n_conv * 0.66) - 1, 0), n_conv - 1)),
-        "layer4": n_conv - 1,
-    }
-    sel_idx = idx_map[layer_key]
-    sel_name, sel_module = conv_layers[sel_idx]
-    resolved_name = f"net.{sel_name}" if sel_name else "net"
-    return sel_module, resolved_name, ""
+    features = model.net.features
+    stage_map = {"layer2": 4, "layer3": 6, "layer4": 8}
+    req_idx = int(stage_map[layer_key])
+    idx = req_idx if req_idx < len(features) else int(round((req_idx / 8.0) * (len(features) - 1)))
+    idx = int(min(max(idx, 0), len(features) - 1))
+    return features[idx], f"net.features.{idx}", ""
 
 
 def _generate_gradcam(

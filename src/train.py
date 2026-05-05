@@ -25,7 +25,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, WeightedRandomSampler
-from torchvision.models import EfficientNet_B4_Weights, ResNet50_Weights, ViT_B_16_Weights, efficientnet_b4, resnet50, vit_b_16
+from torchvision.models import EfficientNet_B4_Weights, efficientnet_b4
 
 from src.data import (
     _cfg,
@@ -50,47 +50,19 @@ class DRClassifier(nn.Module):
         num_classes: int = 5,
         use_pretrained: bool = True,
         dropout: float = 0.0,
-        backbone: str = "resnet50",
+        backbone: str = "efficientnet_b4",
     ) -> None:
         super().__init__()
-        backbone_name = str(backbone).strip().lower()
+        if str(backbone).strip().lower() != "efficientnet_b4":
+            raise ValueError(f"Unsupported backbone: {backbone}. Only efficientnet_b4 is supported.")
         p_drop = float(np.clip(dropout, 0.0, 0.9))
-
-        if backbone_name == "resnet50":
-            weights = ResNet50_Weights.IMAGENET1K_V2 if use_pretrained else None
-            self.net = resnet50(weights=weights)
-            in_features = self.net.fc.in_features
-            if p_drop > 0.0:
-                self.net.fc = nn.Sequential(
-                    nn.Dropout(p=p_drop),
-                    nn.Linear(in_features, num_classes),
-                )
-            else:
-                self.net.fc = nn.Linear(in_features, num_classes)
-        elif backbone_name == "efficientnet_b4":
-            weights = EfficientNet_B4_Weights.IMAGENET1K_V1 if use_pretrained else None
-            self.net = efficientnet_b4(weights=weights)
-            in_features = int(self.net.classifier[-1].in_features)
-            if p_drop > 0.0:
-                self.net.classifier = nn.Sequential(
-                    nn.Dropout(p=p_drop),
-                    nn.Linear(in_features, num_classes),
-                )
-            else:
-                self.net.classifier = nn.Linear(in_features, num_classes)
-        elif backbone_name == "vit_b16":
-            weights = ViT_B_16_Weights.IMAGENET1K_V1 if use_pretrained else None
-            self.net = vit_b_16(weights=weights)
-            in_features = self.net.heads.head.in_features
-            if p_drop > 0.0:
-                self.net.heads.head = nn.Sequential(
-                    nn.Dropout(p=p_drop),
-                    nn.Linear(in_features, num_classes),
-                )
-            else:
-                self.net.heads.head = nn.Linear(in_features, num_classes)
+        weights = EfficientNet_B4_Weights.IMAGENET1K_V1 if use_pretrained else None
+        self.net = efficientnet_b4(weights=weights)
+        in_features = int(self.net.classifier[-1].in_features)
+        if p_drop > 0.0:
+            self.net.classifier = nn.Sequential(nn.Dropout(p=p_drop), nn.Linear(in_features, num_classes))
         else:
-            raise ValueError(f"Unsupported backbone: {backbone_name}")
+            self.net.classifier = nn.Linear(in_features, num_classes)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.net(x)
@@ -680,36 +652,12 @@ def _load_model(
     state_dict = dict(payload["state_dict"])
     target_state = model.state_dict()
 
-    backbone = _backbone_name(conf)
-    if backbone == "resnet50":
-        # Backward/forward compatibility for checkpoints saved before/after dropout head.
-        if "net.fc.weight" in state_dict and "net.fc.1.weight" in target_state:
-            state_dict["net.fc.1.weight"] = state_dict.pop("net.fc.weight")
-        if "net.fc.bias" in state_dict and "net.fc.1.bias" in target_state:
-            state_dict["net.fc.1.bias"] = state_dict.pop("net.fc.bias")
-        if "net.fc.1.weight" in state_dict and "net.fc.weight" in target_state:
-            state_dict["net.fc.weight"] = state_dict.pop("net.fc.1.weight")
-        if "net.fc.1.bias" in state_dict and "net.fc.bias" in target_state:
-            state_dict["net.fc.bias"] = state_dict.pop("net.fc.1.bias")
-    elif backbone == "efficientnet_b4":
-        # Backward/forward compatibility for checkpoints saved before/after dropout head.
-        if "net.classifier.weight" in state_dict and "net.classifier.1.weight" in target_state:
-            state_dict["net.classifier.1.weight"] = state_dict.pop("net.classifier.weight")
-        if "net.classifier.bias" in state_dict and "net.classifier.1.bias" in target_state:
-            state_dict["net.classifier.1.bias"] = state_dict.pop("net.classifier.bias")
-        if "net.classifier.1.weight" in state_dict and "net.classifier.weight" in target_state:
-            state_dict["net.classifier.weight"] = state_dict.pop("net.classifier.1.weight")
-        if "net.classifier.1.bias" in state_dict and "net.classifier.bias" in target_state:
-            state_dict["net.classifier.bias"] = state_dict.pop("net.classifier.1.bias")
-    elif backbone == "vit_b16":
-        if "net.heads.head.weight" in state_dict and "net.heads.head.1.weight" in target_state:
-            state_dict["net.heads.head.1.weight"] = state_dict.pop("net.heads.head.weight")
-        if "net.heads.head.bias" in state_dict and "net.heads.head.1.bias" in target_state:
-            state_dict["net.heads.head.1.bias"] = state_dict.pop("net.heads.head.bias")
-        if "net.heads.head.1.weight" in state_dict and "net.heads.head.weight" in target_state:
-            state_dict["net.heads.head.weight"] = state_dict.pop("net.heads.head.1.weight")
-        if "net.heads.head.1.bias" in state_dict and "net.heads.head.bias" in target_state:
-            state_dict["net.heads.head.bias"] = state_dict.pop("net.heads.head.1.bias")
+    for plain, dropout in [("net.classifier.weight", "net.classifier.1.weight"),
+                           ("net.classifier.bias",   "net.classifier.1.bias")]:
+        if plain in state_dict and dropout in target_state:
+            state_dict[dropout] = state_dict.pop(plain)
+        elif dropout in state_dict and plain in target_state:
+            state_dict[plain] = state_dict.pop(dropout)
 
     model.load_state_dict(state_dict, strict=True)
     model.eval()
@@ -843,44 +791,20 @@ def train_dr_classifier(
     if optimizer_name not in {"adamw", "adam"}:
         raise ValueError(f"Unsupported optimizer_name={optimizer_name}. Use 'adamw' or 'adam'.")
     optimizer_cls = torch.optim.AdamW if optimizer_name == "adamw" else torch.optim.Adam
-    requested_differential_lr = bool(conf["training"].get("use_differential_lr", True))
-    use_differential_lr = requested_differential_lr and backbone_name in {"resnet50", "vit_b16", "efficientnet_b4"}
-    if requested_differential_lr and not use_differential_lr:
-        print(f"Differential LR is not supported for backbone={backbone_name}; falling back to single LR.")
+    use_differential_lr = bool(conf["training"].get("use_differential_lr", False))
 
     if use_differential_lr:
         backbone_mult = float(conf["training"].get("backbone_lr_multiplier", 0.01))
-        layer4_mult = float(conf["training"].get("layer4_lr_multiplier", 0.1))
         head_mult = float(conf["training"].get("head_lr_multiplier", 10.0))
-
+        head_params = list(model.net.classifier.parameters())
+        excluded = {id(p) for p in head_params}
+        backbone_params = [p for p in model.net.parameters() if id(p) not in excluded]
         param_groups: list[dict[str, Any]] = []
-        if backbone_name == "resnet50":
-            layer4_params = list(model.net.layer4.parameters())
-            head_params = list(model.net.fc.parameters())
-            excluded = {id(p) for p in layer4_params + head_params}
-            backbone_params = [p for p in model.net.parameters() if id(p) not in excluded]
-            if backbone_params:
-                param_groups.append({"params": backbone_params, "lr": base_lr * backbone_mult})
-            if layer4_params:
-                param_groups.append({"params": layer4_params, "lr": base_lr * layer4_mult})
-            if head_params:
-                param_groups.append({"params": head_params, "lr": base_lr * head_mult})
-        else:
-            if backbone_name == "vit_b16":
-                head_module = model.net.heads
-            else:
-                head_module = model.net.classifier
-            head_params = list(head_module.parameters())
-            excluded = {id(p) for p in head_params}
-            backbone_params = [p for p in model.net.parameters() if id(p) not in excluded]
-            if backbone_params:
-                param_groups.append({"params": backbone_params, "lr": base_lr * backbone_mult})
-            if head_params:
-                param_groups.append({"params": head_params, "lr": base_lr * head_mult})
-
-        if not param_groups:
-            param_groups = [{"params": model.parameters(), "lr": base_lr}]
-        optimizer = optimizer_cls(param_groups, weight_decay=wd)
+        if backbone_params:
+            param_groups.append({"params": backbone_params, "lr": base_lr * backbone_mult})
+        if head_params:
+            param_groups.append({"params": head_params, "lr": base_lr * head_mult})
+        optimizer = optimizer_cls(param_groups or [{"params": model.parameters(), "lr": base_lr}], weight_decay=wd)
     else:
         optimizer = optimizer_cls(model.parameters(), lr=base_lr, weight_decay=wd)
 

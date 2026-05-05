@@ -253,15 +253,12 @@ def _format_continuous_table_for_display(continuous_df: pd.DataFrame) -> pd.Data
         cohen = float(rec.get("cohen_dz", float("nan")))
         winner_raw = str(rec.get("winner", ""))
         winner_display = {"gradcam": "Grad-CAM", "shap": "SHAP", "tie": "tie"}.get(winner_raw, winner_raw)
-        if not np.isnan(w_p):
-            if w_p < 0.001:
-                p_text = "< 0.001"
-            elif w_p < 0.01:
-                p_text = f"{w_p:.3f}"
-            else:
-                p_text = f"{w_p:.3f}"
-        else:
+        if np.isnan(w_p):
             p_text = "nan"
+        elif w_p < 0.001:
+            p_text = "< 0.001"
+        else:
+            p_text = f"{w_p:.3f}"
         rows.append(
             {
                 "Metric": label,
@@ -283,45 +280,30 @@ def _format_continuous_bottom_line(continuous_df: pd.DataFrame) -> str:
             "> **Continuous analysis unavailable** (rq_xai_continuous_*.csv not found). "
             "Re-run cell 15 to generate it."
         )
-    rec_border = continuous_df[continuous_df["metric"] == "border_ratio"]
-    rec_aopc = continuous_df[continuous_df["metric"] == "aopc_delta"]
-    rec_k20 = continuous_df[continuous_df["metric"] == "faith_delta_k20"]
 
     def _fmt_p(val: float) -> str:
         if np.isnan(val):
             return "nan"
-        if val < 0.001:
-            return "< 0.001"
-        return f"{val:.3f}"
+        return "< 0.001" if val < 0.001 else f"{val:.3f}"
 
+    metric_lines = [
+        ("border_ratio", "Localization (border_ratio)"),
+        ("faith_delta_k20", "Faithfulness (Δ_k20)"),
+        ("aopc_delta", "AOPC (Samek 2017)"),
+    ]
     parts: list[str] = [
         "> **Continuous analysis (research-standard, no arbitrary thresholds):** "
         "paired Wilcoxon signed-rank tests on raw scores.",
     ]
-    if len(rec_border):
-        r = rec_border.iloc[0]
-        p = _fmt_p(float(r["wilcoxon_pvalue"]))
-        parts.append(
-            f"> **Localization (border_ratio):** Grad-CAM={float(r['gradcam_mean']):.3f}, "
-            f"SHAP={float(r['shap_mean']):.3f}, winner=**{str(r['winner']).upper()}**, "
-            f"Wilcoxon p={p}, Cohen's dz={float(r['cohen_dz']):+.2f}."
-        )
-    if len(rec_k20):
-        r = rec_k20.iloc[0]
-        p = _fmt_p(float(r["wilcoxon_pvalue"]))
-        parts.append(
-            f"> **Faithfulness (Δ_k20):** Grad-CAM={float(r['gradcam_mean']):.3f}, "
-            f"SHAP={float(r['shap_mean']):.3f}, winner=**{str(r['winner']).upper()}**, "
-            f"Wilcoxon p={p}, Cohen's dz={float(r['cohen_dz']):+.2f}."
-        )
-    if len(rec_aopc):
-        r = rec_aopc.iloc[0]
-        p = _fmt_p(float(r["wilcoxon_pvalue"]))
-        parts.append(
-            f"> **AOPC (Samek 2017):** Grad-CAM={float(r['gradcam_mean']):.3f}, "
-            f"SHAP={float(r['shap_mean']):.3f}, winner=**{str(r['winner']).upper()}**, "
-            f"Wilcoxon p={p}, Cohen's dz={float(r['cohen_dz']):+.2f}."
-        )
+    for metric_key, label in metric_lines:
+        rec = continuous_df[continuous_df["metric"] == metric_key]
+        if len(rec):
+            r = rec.iloc[0]
+            parts.append(
+                f"> **{label}:** Grad-CAM={float(r['gradcam_mean']):.3f}, "
+                f"SHAP={float(r['shap_mean']):.3f}, winner=**{str(r['winner']).upper()}**, "
+                f"Wilcoxon p={_fmt_p(float(r['wilcoxon_pvalue']))}, Cohen's dz={float(r['cohen_dz']):+.2f}."
+            )
     parts.append(
         "> **Interpretation:** the thresholded pass-rate is a descriptive summary "
         "under a project-specific rule; this continuous analysis is the primary finding."

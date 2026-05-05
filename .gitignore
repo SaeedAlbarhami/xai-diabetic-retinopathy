@@ -45,6 +45,7 @@ src/report/*.fdb_latexmk
 src/report/*.bbl
 src/report/*.blg
 src/report/*.tex
+src/report/XAI_Final-ProjectReport.pdf
 
 # Dataset
 dataset/**/train_images/

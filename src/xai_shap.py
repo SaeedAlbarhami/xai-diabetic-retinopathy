@@ -14,7 +14,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torchvision.models.efficientnet import FusedMBConv, MBConv
-from torchvision.models.resnet import BasicBlock, Bottleneck
 
 try:
     import shap
@@ -71,46 +70,6 @@ def _empty_mps_cache_if_available() -> None:
         pass
 
 
-def _bottleneck_forward_shap_safe(self: Bottleneck, x: torch.Tensor) -> torch.Tensor:
-    identity = x
-
-    out = self.conv1(x)
-    out = self.bn1(out)
-    out = F.relu(out, inplace=False)
-
-    out = self.conv2(out)
-    out = self.bn2(out)
-    out = F.relu(out, inplace=False)
-
-    out = self.conv3(out)
-    out = self.bn3(out)
-
-    if self.downsample is not None:
-        identity = self.downsample(x)
-
-    out = out + identity
-    out = F.relu(out, inplace=False)
-    return out
-
-
-def _basicblock_forward_shap_safe(self: BasicBlock, x: torch.Tensor) -> torch.Tensor:
-    identity = x
-
-    out = self.conv1(x)
-    out = self.bn1(out)
-    out = F.relu(out, inplace=False)
-
-    out = self.conv2(out)
-    out = self.bn2(out)
-
-    if self.downsample is not None:
-        identity = self.downsample(x)
-
-    out = out + identity
-    out = F.relu(out, inplace=False)
-    return out
-
-
 def _mbconv_forward_shap_safe(self: MBConv, x: torch.Tensor) -> torch.Tensor:
     result = self.block(x)
     if self.use_res_connect:
@@ -136,11 +95,7 @@ def _make_shap_compatible(model: nn.Module) -> None:
                 pass
         if isinstance(module, (nn.ReLU, nn.ReLU6, nn.SiLU, nn.Hardswish)):
             module.inplace = False
-        if isinstance(module, Bottleneck):
-            module.forward = types.MethodType(_bottleneck_forward_shap_safe, module)
-        elif isinstance(module, BasicBlock):
-            module.forward = types.MethodType(_basicblock_forward_shap_safe, module)
-        elif isinstance(module, MBConv):
+        if isinstance(module, MBConv):
             module.forward = types.MethodType(_mbconv_forward_shap_safe, module)
         elif isinstance(module, FusedMBConv):
             module.forward = types.MethodType(_fused_mbconv_forward_shap_safe, module)

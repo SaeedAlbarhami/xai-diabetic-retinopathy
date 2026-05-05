@@ -451,56 +451,31 @@ def _build_transform(
     prep = preprocessing_cfg or {}
     ops: list[Any] = []
     if train:
-        if bool(aug_cfg.get("profile_style", False)):
-            ops.append(T.RandomHorizontalFlip(p=float(aug_cfg.get("profile_horizontal_flip", 0.5))))
-            ops.append(T.RandomVerticalFlip(p=float(aug_cfg.get("profile_vertical_flip", 0.0))))
-            profile_rot = float(aug_cfg.get("profile_rotation_degrees", 20.0))
-            if profile_rot > 0.0:
-                ops.append(T.RandomRotation(degrees=profile_rot))
-            profile_translate = float(aug_cfg.get("profile_translate", 0.03))
-            profile_scale_min = float(aug_cfg.get("profile_scale_min", 0.95))
-            profile_scale_max = float(aug_cfg.get("profile_scale_max", 1.05))
-            profile_shear = float(aug_cfg.get("profile_shear_degrees", 8.0))
-            ops.append(
-                T.RandomAffine(
-                    degrees=0.0,
-                    translate=(profile_translate, profile_translate),
-                    scale=(profile_scale_min, profile_scale_max),
-                    shear=(-profile_shear, profile_shear),
-                )
+        ops.append(T.RandomHorizontalFlip(p=float(aug_cfg.get("profile_horizontal_flip", 0.5))))
+        ops.append(T.RandomVerticalFlip(p=float(aug_cfg.get("profile_vertical_flip", 0.0))))
+        profile_rot = float(aug_cfg.get("profile_rotation_degrees", 20.0))
+        if profile_rot > 0.0:
+            ops.append(T.RandomRotation(degrees=profile_rot))
+        profile_translate = float(aug_cfg.get("profile_translate", 0.03))
+        profile_scale_min = float(aug_cfg.get("profile_scale_min", 0.95))
+        profile_scale_max = float(aug_cfg.get("profile_scale_max", 1.05))
+        profile_shear = float(aug_cfg.get("profile_shear_degrees", 8.0))
+        ops.append(
+            T.RandomAffine(
+                degrees=0.0,
+                translate=(profile_translate, profile_translate),
+                scale=(profile_scale_min, profile_scale_max),
+                shear=(-profile_shear, profile_shear),
             )
-            ops.append(
-                T.ColorJitter(
-                    brightness=float(aug_cfg.get("profile_brightness", 0.15)),
-                    contrast=float(aug_cfg.get("profile_contrast", 0.15)),
-                    saturation=float(aug_cfg.get("profile_saturation", 0.0)),
-                    hue=float(aug_cfg.get("profile_hue", 0.0)),
-                )
+        )
+        ops.append(
+            T.ColorJitter(
+                brightness=float(aug_cfg.get("profile_brightness", 0.15)),
+                contrast=float(aug_cfg.get("profile_contrast", 0.15)),
+                saturation=float(aug_cfg.get("profile_saturation", 0.0)),
+                hue=float(aug_cfg.get("profile_hue", 0.0)),
             )
-        else:
-            ops.append(T.RandomHorizontalFlip(p=float(aug_cfg.get("train_horizontal_flip", 0.5))))
-            ops.append(T.RandomVerticalFlip(p=float(aug_cfg.get("train_vertical_flip", 0.5))))
-            rot_deg = float(aug_cfg.get("train_rotation_degrees", 180.0))
-            if rot_deg > 0.0:
-                ops.append(T.RandomRotation(degrees=rot_deg))
-            affine_translate = float(aug_cfg.get("train_affine_translate", 0.05))
-            affine_scale_min = float(aug_cfg.get("train_affine_scale_min", 0.90))
-            affine_scale_max = float(aug_cfg.get("train_affine_scale_max", 1.10))
-            ops.append(
-                T.RandomAffine(
-                    degrees=0.0,
-                    translate=(affine_translate, affine_translate),
-                    scale=(affine_scale_min, affine_scale_max),
-                )
-            )
-            ops.append(
-                T.ColorJitter(
-                    brightness=float(aug_cfg.get("color_jitter_brightness", 0.30)),
-                    contrast=float(aug_cfg.get("color_jitter_contrast", 0.30)),
-                    saturation=float(aug_cfg.get("color_jitter_saturation", 0.15)),
-                    hue=float(aug_cfg.get("color_jitter_hue", 0.03)),
-                )
-            )
+        )
 
     if not skip_resize:
         ops.append(T.Resize((image_size, image_size)))
