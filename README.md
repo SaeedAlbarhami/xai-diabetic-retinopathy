@@ -196,7 +196,6 @@ xai-diabetic-retinopathy/
 ├── src/
 │   ├── data.py
 │   ├── train.py
-│   ├── xai.py
 │   ├── xai_common.py
 │   ├── xai_metrics.py
 │   ├── xai_stats.py
@@ -205,7 +204,6 @@ xai-diabetic-retinopathy/
 │   ├── xai_shap.py
 │   ├── xai_audit.py
 │   ├── xai_single.py
-│   ├── xai_notebook.py
 │   └── report/
 ├── dataset/
 ├── artifacts/
@@ -216,8 +214,9 @@ Module ownership is intentionally split:
 
 - `src/data.py`: config loading, manifests, preprocessing, dataset classes
 - `src/train.py`: model training, checkpointing, evaluation, calibration
-- `src/xai.py`: public facade used by the notebook and scripts
-- `src/xai_*.py`: implementation modules for visualization, statistics, metrics, Grad-CAM, SHAP, audit orchestration, notebook adapters, and single-case reporting
+- `src/xai_audit.py`: paired Grad-CAM/SHAP audit, XAI summary tables, and notebook-facing XAI audit functions
+- `src/xai_single.py`: single-case explanation workflow and notebook-facing qualitative case-study function
+- `src/xai_common.py`, `src/xai_metrics.py`, `src/xai_stats.py`, `src/xai_viz.py`, `src/xai_gradcam.py`, `src/xai_shap.py`: implementation modules for XAI runtime, metrics, statistics, visualization, Grad-CAM, and SHAP
 
 ## Outputs and Key Artifacts
 
