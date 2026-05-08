@@ -123,6 +123,65 @@ def _build_shap_explainer_with_known_warning_filter(
         return shap.DeepExplainer(wrapper, background)
 
 
+def build_shap_session(
+    conf: dict[str, Any],
+    seed: int,
+    ckpt_path: str | Path,
+    primary_device: torch.device,
+    shap_device: torch.device,
+    source_model: nn.Module,
+    bg_size: int | None = None,
+) -> tuple[nn.Module, Any]:
+    """Resolve SHAP-safe model on shap_device, build a class-balanced training-image
+    background, and return (shap_model, deep_explainer) ready to score images.
+
+    Both the per-sample audit loop and the single-case demo use this; without it
+    the same ~30 lines of background construction and explainer setup were
+    duplicated across both call sites.
+    """
+    if shap is None:
+        raise RuntimeError("shap is required. Install with `pip install shap==0.47.2`.")
+
+    if str(shap_device) == str(primary_device):
+        shap_model = source_model
+    else:
+        shap_model = _load_model(conf, seed, shap_device, checkpoint=ckpt_path)
+    _make_shap_compatible(shap_model)
+    wrapper = _LogitWrapper(shap_model).to(shap_device)
+
+    if bg_size is None:
+        bg_size = int(conf.get("xai", {}).get("shap_background_size", 64))
+    bg_size = max(1, int(bg_size))
+    image_size = _model_image_size(conf)
+
+    train_manifest = _manifest_path(conf, "train", seed=seed)
+    train_df = pd.read_csv(train_manifest)
+    if len(train_df) == 0:
+        raise RuntimeError("Train manifest is empty; cannot build SHAP background")
+
+    per_class = max(1, bg_size // int(conf["data"]["num_classes"]))
+    bg_df = train_df.groupby("class_id", group_keys=False).apply(
+        lambda g: g.sample(n=min(len(g), per_class), random_state=int(seed))
+    ).reset_index(drop=True)
+    if len(bg_df) < bg_size:
+        extra = train_df.sample(n=bg_size - len(bg_df), random_state=int(seed))
+        bg_df = pd.concat([bg_df, extra], ignore_index=True)
+    bg_df = bg_df.head(bg_size)
+
+    bg_tensors = []
+    for _, row in bg_df.iterrows():
+        _, bt = _load_image_for_inference(
+            row["image_path"],
+            image_size=image_size,
+            preprocessing_cfg=conf.get("preprocessing", {}),
+        )
+        bg_tensors.append(bt.squeeze(0))
+    background = torch.stack(bg_tensors, dim=0).to(shap_device)
+
+    explainer = _build_shap_explainer_with_known_warning_filter(wrapper, background)
+    return shap_model, explainer
+
+
 def _shap_values_with_known_warning_filter(explainer: Any, inputs: torch.Tensor) -> Any:
     with warnings.catch_warnings():
         warnings.filterwarnings(

@@ -1,6 +1,5 @@
 project:
   name: dr_xai
-  seed_list: [1988, 42, 2026]
 
 paths:
   dataset_root: dataset
@@ -12,11 +11,6 @@ paths:
   aptos_train_image_dir: dataset/aptos2019/train_images
   aptos_valid_image_dir: dataset/aptos2019/val_images
   aptos_test_image_dir: dataset/aptos2019/test_images
-  roboflow_root: dataset/roboflow
-  roboflow_train_dir: dataset/roboflow/train
-  roboflow_valid_dir: dataset/roboflow/valid
-  roboflow_train_labels_csv: dataset/roboflow/train/_classes.csv
-  roboflow_valid_labels_csv: dataset/roboflow/valid/_classes.csv
 
   artifacts_root: artifacts
   manifests_dir: artifacts/manifests
@@ -34,12 +28,8 @@ data:
   image_size: 380
   num_classes: 5
   label_order: [No_DR, Mild, Moderate, Severe, Proliferate_DR]
-  split_seed_list: [1988, 42, 2026]
   profile_test_ratio: 0.15
   profile_val_ratio_within_train: 0.10
-  train_ratio: 0.75
-  test_ratio: 0.15
-  val_ratio: 0.10
   stratify_seed: 1988
 
 preprocessing:
@@ -54,8 +44,6 @@ preprocessing:
   norm_std: [0.229, 0.224, 0.225]
 
 augmentation:
-  profile_style: true
-  profile_target_per_class: 0
   profile_horizontal_flip: 0.5
   profile_vertical_flip: 0.0
   profile_rotation_degrees: 20
@@ -65,17 +53,6 @@ augmentation:
   profile_shear_degrees: 8
   profile_brightness: 0.15
   profile_contrast: 0.15
-
-  train_horizontal_flip: 0.5
-  train_vertical_flip: 0.0
-  train_rotation_degrees: 20
-  train_affine_translate: 0.03
-  train_affine_scale_min: 0.95
-  train_affine_scale_max: 1.05
-  color_jitter_brightness: 0.15
-  color_jitter_contrast: 0.15
-  color_jitter_saturation: 0.0
-  color_jitter_hue: 0.0
 
 training:
   device: auto
@@ -88,27 +65,15 @@ training:
   lr: 0.00007
   weight_decay: 0.0001
   grad_accum_steps: 1
-  use_differential_lr: false
-  backbone_lr_multiplier: 0.05
-  layer4_lr_multiplier: 0.1
-  head_lr_multiplier: 10.0
   early_stopping_patience: 3
   label_smoothing: 0.03
   loss_name: focal
-  use_focal_loss: true
   focal_gamma: 2.0
-  use_ordinal_loss: false
-  ordinal_loss_weight: 0.0
   dropout: 0.20
-  use_weighted_sampler: false
-  profile_class_balanced_sampling: false
   use_class_weights: true
   use_scheduler: true
   scheduler_name: cosine_annealing
-  scheduler_factor: 0.5
-  scheduler_patience: 8
   scheduler_min_lr: 0.0000001
-  scheduler_min_lr_ratio: 0.01
   use_pretrained: true
 
 calibration:

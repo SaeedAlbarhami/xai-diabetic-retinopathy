@@ -18,10 +18,10 @@
   "narrative": [
     "Predicted DR grade: Mild (1) with probability 0.857.",
     "Next most likely alternative: Moderate (0.091).",
-    "Suggested triage framing: TBD",
-    "Confidence note: TBD",
-    "How to use maps: TBD",
-    "Clinical safeguard: TBD"
+    "Suggested triage framing: Mild non-proliferative DR pattern. Annual screening with documentation of progression markers.",
+    "Confidence note: probabilities support triage review and should be interpreted with image quality and clinical context.",
+    "How to use maps: compare Grad-CAM and SHAP panels to verify that highlighted regions fall on retinal tissue.",
+    "Clinical safeguard: explanations are decision-support evidence only and do not replace clinician grading."
   ],
   "shap_available": true,
   "fundus_url": "static/cases/case_1/fundus.png?v=1637136802",

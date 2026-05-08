@@ -18,10 +18,10 @@
   "narrative": [
     "Predicted DR grade: No_DR (0) with probability 1.000.",
     "Next most likely alternative: Mild (0.000).",
-    "Suggested triage framing: TBD",
-    "Confidence note: TBD",
-    "How to use maps: TBD",
-    "Clinical safeguard: TBD"
+    "Suggested triage framing: No DR pattern dominant. Continue routine follow-up if clinical exam is consistent.",
+    "Confidence note: probabilities support triage review and should be interpreted with image quality and clinical context.",
+    "How to use maps: compare Grad-CAM and SHAP panels to verify that highlighted regions fall on retinal tissue.",
+    "Clinical safeguard: explanations are decision-support evidence only and do not replace clinician grading."
   ],
   "shap_available": true,
   "fundus_url": "static/cases/case_0/fundus.png?v=1637136652",

@@ -5,16 +5,16 @@ Single-script flow:
 2. For each of the five DR classes, pick the highest-confidence correctly
    predicted test image and run ``explain_single_image_detailed`` to produce
    the prediction probabilities, Grad-CAM overlay, and SHAP overlay.
-3. Cache everything under ``demo/static/cases/<class_id>/``.
-4. Render ``demo/index.html`` from the cached data.
+3. Cache everything under ``docs/static/cases/<class_id>/``.
+4. Render ``docs/index.html`` from the cached data.
 5. Serve the demo on http://127.0.0.1:5050 and open the browser.
 
 Usage::
 
-    python demo/app.py            # full run (generates cases if missing)
-    python demo/app.py --rebuild  # force regeneration even if cached
-    python demo/app.py --no-open  # do not open browser
-    python demo/app.py --port 5050
+    python docs/app.py            # full run (generates cases if missing)
+    python docs/app.py --rebuild  # force regeneration even if cached
+    python docs/app.py --no-open  # do not open browser
+    python docs/app.py --port 5050
 
 Caches are deterministic; rerunning without ``--rebuild`` reuses outputs.
 """
@@ -132,15 +132,15 @@ def _build_clinical_narrative(result: dict) -> list[str]:
     return [
         f"Predicted DR grade: {LABEL_ORDER[pred]} ({pred}) with probability {conf:.3f}.",
         f"Next most likely alternative: {LABEL_ORDER[second_idx]} ({second_prob:.3f}).",
-        "Suggested triage framing: TBD",
-        "Confidence note: TBD",
-        "How to use maps: TBD",
-        "Clinical safeguard: TBD",
+        f"Suggested triage framing: {TRIAGE_FRAMING.get(pred, 'Review with an ophthalmology specialist.')}",
+        "Confidence note: probabilities support triage review and should be interpreted with image quality and clinical context.",
+        "How to use maps: compare Grad-CAM and SHAP panels to verify that highlighted regions fall on retinal tissue.",
+        "Clinical safeguard: explanations are decision-support evidence only and do not replace clinician grading.",
     ]
 
 
 def _generate_case(case: dict) -> dict:
-    """Run the per-class single-case demo on one image and save artefacts under demo/static/cases/.
+    """Run the per-class single-case demo on one image and save artefacts under docs/static/cases/.
 
     Uses ``run_single_case_demo`` so the Grad-CAM and SHAP visualisations match the
     per-class grids in the report (Figures 14 and 15): one row showing the original

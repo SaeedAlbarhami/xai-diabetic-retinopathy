@@ -18,10 +18,10 @@
   "narrative": [
     "Predicted DR grade: Severe (3) with probability 0.639.",
     "Next most likely alternative: Moderate (0.305).",
-    "Suggested triage framing: TBD",
-    "Confidence note: TBD",
-    "How to use maps: TBD",
-    "Clinical safeguard: TBD"
+    "Suggested triage framing: Severe non-proliferative DR pattern. Prompt retinal-specialist referral indicated.",
+    "Confidence note: probabilities support triage review and should be interpreted with image quality and clinical context.",
+    "How to use maps: compare Grad-CAM and SHAP panels to verify that highlighted regions fall on retinal tissue.",
+    "Clinical safeguard: explanations are decision-support evidence only and do not replace clinician grading."
   ],
   "shap_available": true,
   "fundus_url": "static/cases/case_3/fundus.png?v=1637136684",

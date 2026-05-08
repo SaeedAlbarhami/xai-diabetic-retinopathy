@@ -18,10 +18,10 @@
   "narrative": [
     "Predicted DR grade: Proliferate_DR (4) with probability 0.837.",
     "Next most likely alternative: Moderate (0.121).",
-    "Suggested triage framing: TBD",
-    "Confidence note: TBD",
-    "How to use maps: TBD",
-    "Clinical safeguard: TBD"
+    "Suggested triage framing: Proliferative DR pattern. URGENT referral for treatment evaluation (anti-VEGF, panretinal photocoagulation, or vitrectomy).",
+    "Confidence note: probabilities support triage review and should be interpreted with image quality and clinical context.",
+    "How to use maps: compare Grad-CAM and SHAP panels to verify that highlighted regions fall on retinal tissue.",
+    "Clinical safeguard: explanations are decision-support evidence only and do not replace clinician grading."
   ],
   "shap_available": true,
   "fundus_url": "static/cases/case_4/fundus.png?v=1637136930",

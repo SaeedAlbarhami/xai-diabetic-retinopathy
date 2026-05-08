@@ -1,6 +1,7 @@
 """Single-image XAI demo: quick prediction, detailed per-layer explanations, and report-figure rendering."""
 from __future__ import annotations
 
+import copy
 import gc
 from pathlib import Path
 from typing import Any
@@ -8,7 +9,6 @@ from typing import Any
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from PIL import Image
 import torch
 
 from src.data import (
@@ -39,13 +39,12 @@ from src.xai_metrics import (
     _faithfulness_multi_k,
 )
 from src.xai_shap import (
-    _build_shap_explainer_with_known_warning_filter,
     _empty_mps_cache_if_available,
-    _make_shap_compatible,
     _pick_shap_map,
     _shap_to_2d,
     _shap_values_with_known_warning_filter,
     _should_retry_shap_on_cpu,
+    build_shap_session,
     plot_shap_grid,
 )
 from src.xai_stats import _xai_pass_flag
@@ -195,38 +194,17 @@ def explain_single_image_detailed(
         train_manifest = _manifest_path(conf, "train", seed=seed)
         if not train_manifest.exists():
             prepare_data_manifests(conf, seed=seed)
-        train_df = pd.read_csv(train_manifest)
-        if len(train_df) == 0:
-            raise RuntimeError("Train manifest is empty; cannot build SHAP background")
-
-        per_class = max(1, bg_size // int(conf["data"]["num_classes"]))
-        bg_df = train_df.groupby("class_id", group_keys=False).apply(
-            lambda g: g.sample(n=min(len(g), per_class), random_state=int(seed))
-        ).reset_index(drop=True)
-        if len(bg_df) < bg_size:
-            extra = train_df.sample(n=bg_size - len(bg_df), random_state=int(seed))
-            bg_df = pd.concat([bg_df, extra], ignore_index=True)
-        bg_df = bg_df.head(bg_size)
-
-        bg_tensors: list[torch.Tensor] = []
-        for _, b in bg_df.iterrows():
-            _, bt = _load_image_for_inference(
-                b["image_path"],
-                image_size=image_size,
-                preprocessing_cfg=conf.get("preprocessing", {}),
-            )
-            bg_tensors.append(bt.squeeze(0))
-        background_cpu = torch.stack(bg_tensors, dim=0)
 
         def _run_single_shap(shap_device: torch.device) -> dict[str, Any]:
-            if str(shap_device) == str(device):
-                shap_model = model
-            else:
-                shap_model = _load_model(conf, seed, shap_device, checkpoint=ckpt_path)
-            _make_shap_compatible(shap_model)
-            wrapper = _LogitWrapper(shap_model).to(shap_device)
-            background = background_cpu.to(shap_device)
-            explainer = _build_shap_explainer_with_known_warning_filter(wrapper, background)
+            shap_model, explainer = build_shap_session(
+                conf=conf,
+                seed=seed,
+                ckpt_path=ckpt_path,
+                primary_device=device,
+                shap_device=shap_device,
+                source_model=model,
+                bg_size=bg_size,
+            )
             shap_input = tensor.to(shap_device)
             shap_values = _shap_values_with_known_warning_filter(explainer, shap_input)
             smap = _pick_shap_map(shap_values, class_id=pred_class, sample_index=0)
@@ -476,5 +454,177 @@ def run_single_case_demo(
         "single_result": single_result,
         "xai_warnings": list(single_result.get("xai_warnings") or []),
         "shap_background_size": bg_size,
+    }
+
+
+def notebook_run_single_case_report(
+    cfg_or_path: str | Path | dict[str, Any],
+    seed: int = 1988,
+    image_path: str = "",
+    split: str = "test",
+    safe_mode: bool = False,
+) -> dict[str, Any]:
+    from src.xai_audit import _parse_gradcam_layers
+
+    conf = copy.deepcopy(_cfg(cfg_or_path))
+    xai_cfg = conf.setdefault("xai", {})
+
+    if safe_mode:
+        xai_cfg["device"] = "cpu"
+        xai_cfg["shap_background_size"] = min(int(xai_cfg.get("shap_background_size", 64)), 8)
+    else:
+        xai_cfg.setdefault("device", conf.get("training", {}).get("device", "mps"))
+
+    default_gradcam_layer = str(xai_cfg.get("gradcam_layer", "layer4"))
+    requested_gradcam_layers = _parse_gradcam_layers(
+        raw_layers=xai_cfg.get("gradcam_layers_eval", ["layer2", "layer3", default_gradcam_layer]),
+        default_layer=default_gradcam_layer,
+    )
+
+    demo_image_path = str(image_path).strip()
+    single_demo = run_single_case_demo(
+        cfg_path=conf,
+        seed=int(seed),
+        image_path=demo_image_path,
+        split=str(split).strip().lower() or "test",
+        gradcam_layers=requested_gradcam_layers,
+        shap_background_size=int(xai_cfg.get("shap_background_size", 64)),
+        shap_panel_size=(3.2, 3.6),
+        shap_dpi=min(600, max(240, int(xai_cfg.get("figure_dpi", 180)))),
+    )
+
+    prob_table = single_demo["prob_table"].copy()
+    top1 = prob_table.iloc[0] if len(prob_table) else None
+    top2 = prob_table.iloc[1] if len(prob_table) > 1 else None
+
+    pred_name = str(top1["class_name"]) if top1 is not None else "N/A"
+    pred_prob = float(top1["probability"]) if top1 is not None else float("nan")
+    alt_txt = "N/A" if top2 is None else f"{top2['class_name']} ({float(top2['probability']):.3f})"
+
+    triage_map = {
+        0: "No DR pattern dominant. Continue routine follow-up if clinical exam is consistent.",
+        1: "Mild DR pattern dominant. Consider short-interval follow-up and risk-factor optimization.",
+        2: "Moderate DR pattern dominant. Recommend retina referral and closer follow-up planning.",
+        3: "Severe DR pattern dominant. Escalate referral urgency to retina specialist.",
+        4: "Proliferative DR pattern dominant. Treat as high-urgency retinal review candidate.",
+    }
+    pred_class = int(single_demo["pred_class"])
+    triage_line = triage_map.get(pred_class, "Prediction outside expected range; use specialist review.")
+
+    if np.isfinite(pred_prob) and pred_prob >= 0.80:
+        conf_line = "Model confidence is high for this case."
+    elif np.isfinite(pred_prob) and pred_prob >= 0.60:
+        conf_line = "Model confidence is moderate; confirm with full clinical context."
+    else:
+        conf_line = "Model confidence is low; treat as uncertain and prioritize manual review."
+
+    summary_markdown = (
+        f"**Manifest used:** `{single_demo['manifest_path']}`\n\n"
+        f"**Image:** `{single_demo['image_path']}`\n\n"
+        f"**Prediction:** {single_demo['pred_label']} ({single_demo['pred_class']}) | "
+        f"**Confidence:** {single_demo['confidence']:.4f}\n\n"
+        f"**True label:** {single_demo.get('true_label', 'N/A')} ({single_demo.get('true_class', 'N/A')})\n\n"
+        f"**Run ID:** `{single_demo['run_id']}` | **Device:** `{single_demo['device']}`"
+    )
+    story_markdown = "\n".join(
+        [
+            "### Clinical Decision Support Narrative",
+            f"- Predicted DR grade: **{pred_name} ({pred_class})** with probability **{pred_prob:.3f}**.",
+            f"- Next most likely alternative: **{alt_txt}**.",
+            f"- Suggested triage framing: {triage_line}",
+            f"- Confidence note: {conf_line}",
+            "- How to use maps: highlighted regions are decision-support cues, not standalone diagnostic proof.",
+            "- Clinical safeguard: final diagnosis and treatment decisions remain clinician-led.",
+        ]
+    )
+
+    figure_sections = [
+        {
+            "title": f"### Grad-CAM (Per-Class Grid, layer={single_demo.get('gradcam_layer', 'layer4')})",
+            "path": str(single_demo["gradcam_grid_path"]),
+        },
+        {
+            "title": "### SHAP (Per-Class Grid)",
+            "path": str(single_demo["shap_grid_path"]),
+        },
+    ]
+
+    single_result = single_demo.get("single_result", {}) or {}
+    gradcam_details_list = single_result.get("gradcam_details", []) or []
+    shap_details = single_result.get("shap_details", {}) or {}
+    gcam_row = None
+    for entry in gradcam_details_list:
+        if str(entry.get("layer", "")) == default_gradcam_layer:
+            gcam_row = entry
+            break
+    if gcam_row is None and gradcam_details_list:
+        gcam_row = gradcam_details_list[0]
+    gcam_row = gcam_row or {}
+
+    def _fmt(v: Any) -> str:
+        try:
+            f = float(v)
+            if not np.isfinite(f):
+                return "N/A"
+            return f"{f:.3f}"
+        except (TypeError, ValueError):
+            return "N/A"
+
+    quality_profile_df = pd.DataFrame(
+        [
+            {
+                "method": "Grad-CAM",
+                "border_ratio": float(gcam_row.get("border_ratio", float("nan"))),
+                "retina_ratio": float(gcam_row.get("retina_ratio", float("nan"))),
+                "faith_delta_k20": float(gcam_row.get("faith_delta_k20", gcam_row.get("faithfulness_delta", float("nan")))),
+                "aopc_delta": float(gcam_row.get("aopc_delta", float("nan"))),
+            },
+            {
+                "method": "SHAP",
+                "border_ratio": float(shap_details.get("border_ratio", float("nan"))),
+                "retina_ratio": float(shap_details.get("retina_ratio", float("nan"))),
+                "faith_delta_k20": float(shap_details.get("faith_delta_k20", shap_details.get("faithfulness_delta", float("nan")))),
+                "aopc_delta": float(shap_details.get("aopc_delta", float("nan"))),
+            },
+        ]
+    )
+
+    quality_profile_markdown = "\n".join(
+        [
+            "### Explanation Quality Profile",
+            "",
+            "| Method | Border ratio (↓) | Retina ratio (↑) | Δ$_{k20}$ (↑) | AOPC (↑) |",
+            "|---|---|---|---|---|",
+            f"| Grad-CAM | {_fmt(gcam_row.get('border_ratio'))} | {_fmt(gcam_row.get('retina_ratio'))} | "
+            f"{_fmt(gcam_row.get('faith_delta_k20', gcam_row.get('faithfulness_delta')))} | "
+            f"{_fmt(gcam_row.get('aopc_delta'))} |",
+            f"| SHAP | {_fmt(shap_details.get('border_ratio'))} | {_fmt(shap_details.get('retina_ratio'))} | "
+            f"{_fmt(shap_details.get('faith_delta_k20', shap_details.get('faithfulness_delta')))} | "
+            f"{_fmt(shap_details.get('aopc_delta'))} |",
+            "",
+            "**Interpretation:**",
+            "",
+            "- **Border ratio** (↓ lower is better) — share of the heatmap falling on the dark corners outside the eye.",
+            "- **Retina ratio** (↑ higher is better) — share landing inside the retinal disc. Low border plus high retina means attention stays on the eye.",
+            "- **Δ$_{k20}$** (↑ higher is better) — drop in the model's confidence when the top 20\\% most-important pixels are removed. A bigger drop means those pixels really mattered to the prediction.",
+            "- **AOPC** (↑ higher is better) — the same idea as Δ$_{k20}$ averaged across several removal sizes (a smoother version).",
+            "",
+            "These are per-case decision-support cues, not standalone diagnostic evidence.",
+        ]
+    )
+
+    return {
+        "cfg_xai": conf,
+        "seed": int(seed),
+        "split": str(split).strip().lower() or "test",
+        "safe_mode": bool(safe_mode),
+        "single_demo": single_demo,
+        "prob_table": prob_table,
+        "summary_markdown": summary_markdown,
+        "story_markdown": story_markdown,
+        "figure_sections": figure_sections,
+        "quality_profile_df": quality_profile_df,
+        "quality_profile_markdown": quality_profile_markdown,
+        "xai_warnings": list(single_demo.get("xai_warnings", []) or []),
     }
 

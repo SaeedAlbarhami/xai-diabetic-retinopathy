@@ -24,7 +24,7 @@ from sklearn.metrics import (
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, WeightedRandomSampler
+from torch.utils.data import DataLoader
 from torchvision.models import EfficientNet_B4_Weights, efficientnet_b4
 
 from src.data import (
@@ -391,6 +391,18 @@ def _resolve_checkpoint_and_run_id(
     return _checkpoint_path_for_run_id(conf, run_id), run_id
 
 
+def _signature_subset_match(saved: Any, query: Any) -> bool:
+    """Return True if every key/value in query is present in saved with matching value.
+    Compares dicts recursively so a slimmer current signature still matches an older,
+    fuller saved signature provided every key in current is in saved with the same value.
+    """
+    if isinstance(query, dict):
+        if not isinstance(saved, dict):
+            return False
+        return all(k in saved and _signature_subset_match(saved[k], v) for k, v in query.items())
+    return saved == query
+
+
 def _find_matching_checkpoint_by_signature(
     conf: dict[str, Any],
     seed: int,
@@ -416,7 +428,7 @@ def _find_matching_checkpoint_by_signature(
             saved_sig = payload.get("config_signature")
         except Exception:
             continue
-        if saved_sig == config_signature:
+        if _signature_subset_match(saved_sig, config_signature):
             run_id = _run_id_from_checkpoint_path(conf, seed, ckpt)
             return ckpt, run_id
     return None
@@ -430,14 +442,26 @@ def _run_id_from_predictions_path(predictions_path: str | Path, split: str) -> s
     return ""
 
 
+_USED_AUG_KEYS = (
+    "profile_horizontal_flip",
+    "profile_vertical_flip",
+    "profile_rotation_degrees",
+    "profile_translate",
+    "profile_scale_min",
+    "profile_scale_max",
+    "profile_shear_degrees",
+    "profile_brightness",
+    "profile_contrast",
+)
+
+
 def _checkpoint_config_signature(conf: dict[str, Any]) -> dict[str, Any]:
+    aug = conf.get("augmentation", {})
     return {
         "data_protocol": "benchmark",
         "data_source": str(conf.get("data", {}).get("source", "aptos_only")),
-        "profile_test_ratio": float(conf.get("data", {}).get("profile_test_ratio", conf.get("data", {}).get("test_ratio", 0.15))),
-        "profile_val_ratio_within_train": float(
-            conf.get("data", {}).get("profile_val_ratio_within_train", conf.get("data", {}).get("val_ratio", 0.10))
-        ),
+        "profile_test_ratio": float(conf.get("data", {}).get("profile_test_ratio", 0.15)),
+        "profile_val_ratio_within_train": float(conf.get("data", {}).get("profile_val_ratio_within_train", 0.10)),
         "backbone": _backbone_name(conf),
         "image_size": int(conf["data"]["image_size"]),
         "effective_image_size": _model_image_size(conf),
@@ -448,27 +472,14 @@ def _checkpoint_config_signature(conf: dict[str, Any]) -> dict[str, Any]:
         "optimizer_name": str(conf["training"].get("optimizer_name", "adamw")),
         "lr": float(conf["training"]["lr"]),
         "weight_decay": float(conf["training"]["weight_decay"]),
-        "use_weighted_sampler": bool(conf["training"].get("use_weighted_sampler", True)),
         "use_class_weights": bool(conf["training"].get("use_class_weights", True)),
-        "loss_name": str(conf["training"].get("loss_name", "auto")),
-        "use_focal_loss": bool(conf["training"].get("use_focal_loss", False)),
+        "loss_name": str(conf["training"].get("loss_name", "focal")),
         "focal_gamma": float(conf["training"].get("focal_gamma", 2.0)),
-        "use_ordinal_loss": bool(conf["training"].get("use_ordinal_loss", True)),
-        "ordinal_loss_weight": float(conf["training"].get("ordinal_loss_weight", 0.3)),
         "grad_accum_steps": int(conf["training"].get("grad_accum_steps", 1)),
-        "profile_class_balanced_sampling": bool(conf["training"].get("profile_class_balanced_sampling", False)),
-        "profile_target_per_class": int(conf.get("augmentation", {}).get("profile_target_per_class", 0)),
-        "use_differential_lr": bool(conf["training"].get("use_differential_lr", True)),
-        "backbone_lr_multiplier": float(conf["training"].get("backbone_lr_multiplier", 0.01)),
-        "layer4_lr_multiplier": float(conf["training"].get("layer4_lr_multiplier", 0.1)),
-        "head_lr_multiplier": float(conf["training"].get("head_lr_multiplier", 10.0)),
-        "scheduler_name": str(conf["training"].get("scheduler_name", "reduce_on_plateau")),
+        "scheduler_name": str(conf["training"].get("scheduler_name", "cosine_annealing")),
         "use_scheduler": bool(conf["training"].get("use_scheduler", True)),
-        "scheduler_factor": float(conf["training"].get("scheduler_factor", 0.5)),
-        "scheduler_patience": int(conf["training"].get("scheduler_patience", 3)),
         "scheduler_min_lr": float(conf["training"].get("scheduler_min_lr", 1e-8)),
-        "scheduler_min_lr_ratio": float(conf["training"].get("scheduler_min_lr_ratio", 0.01)),
-        "augmentation": dict(conf.get("augmentation", {})),
+        "augmentation": {k: aug[k] for k in _USED_AUG_KEYS if k in aug},
         "preprocessing": dict(conf.get("preprocessing", {})),
     }
 
@@ -739,33 +750,10 @@ def train_dr_classifier(
         train=False,
     )
 
-    num_classes = int(conf["data"]["num_classes"])
-    class_ids = train_df["class_id"].astype(int).to_numpy()
-    counts = np.bincount(class_ids, minlength=num_classes).astype(np.float32)
-    counts[counts == 0] = 1.0
-    sample_weights_np = (1.0 / counts[class_ids]).astype(np.float32)
-
-    use_weighted_sampler = bool(conf["training"].get("use_weighted_sampler", True))
-    profile_class_balanced_sampling = bool(conf["training"].get("profile_class_balanced_sampling", False))
-    profile_target_per_class = int(conf.get("augmentation", {}).get("profile_target_per_class", 0))
-    sampler = None
-    if use_weighted_sampler:
-        sample_weights = torch.tensor(sample_weights_np, dtype=torch.double)
-        if profile_class_balanced_sampling and profile_target_per_class > 0:
-            num_samples = int(max(1, profile_target_per_class) * max(1, num_classes))
-        else:
-            num_samples = int(len(sample_weights_np))
-        sampler = WeightedRandomSampler(
-            weights=sample_weights,
-            num_samples=num_samples,
-            replacement=True,
-        )
-
     train_loader = DataLoader(
         train_ds,
         batch_size=int(conf["training"]["batch_size"]),
-        shuffle=False if sampler is not None else True,
-        sampler=sampler,
+        shuffle=True,
         num_workers=int(conf["training"].get("num_workers", 0)),
         pin_memory=False,
     )
@@ -784,35 +772,19 @@ def train_dr_classifier(
         backbone=_backbone_name(conf),
     ).to(device)
 
-    backbone_name = _backbone_name(conf)
     base_lr = float(conf["training"]["lr"])
     wd = float(conf["training"]["weight_decay"])
     optimizer_name = str(conf["training"].get("optimizer_name", "adamw")).strip().lower()
     if optimizer_name not in {"adamw", "adam"}:
         raise ValueError(f"Unsupported optimizer_name={optimizer_name}. Use 'adamw' or 'adam'.")
     optimizer_cls = torch.optim.AdamW if optimizer_name == "adamw" else torch.optim.Adam
-    use_differential_lr = bool(conf["training"].get("use_differential_lr", False))
-
-    if use_differential_lr:
-        backbone_mult = float(conf["training"].get("backbone_lr_multiplier", 0.01))
-        head_mult = float(conf["training"].get("head_lr_multiplier", 10.0))
-        head_params = list(model.net.classifier.parameters())
-        excluded = {id(p) for p in head_params}
-        backbone_params = [p for p in model.net.parameters() if id(p) not in excluded]
-        param_groups: list[dict[str, Any]] = []
-        if backbone_params:
-            param_groups.append({"params": backbone_params, "lr": base_lr * backbone_mult})
-        if head_params:
-            param_groups.append({"params": head_params, "lr": base_lr * head_mult})
-        optimizer = optimizer_cls(param_groups or [{"params": model.parameters(), "lr": base_lr}], weight_decay=wd)
-    else:
-        optimizer = optimizer_cls(model.parameters(), lr=base_lr, weight_decay=wd)
+    optimizer = optimizer_cls(model.parameters(), lr=base_lr, weight_decay=wd)
 
     use_class_weights = bool(conf["training"].get("use_class_weights", True))
     class_weights_for_loss = class_w if use_class_weights else None
     label_smoothing = float(conf["training"].get("label_smoothing", 0.0))
     loss_name = str(conf["training"].get("loss_name", "focal")).strip().lower()
-    use_focal_loss = (loss_name == "focal") or bool(conf["training"].get("use_focal_loss", False))
+    use_focal_loss = (loss_name == "focal")
     focal_gamma = float(conf["training"].get("focal_gamma", 2.0))
     grad_accum_steps = int(max(1, conf["training"].get("grad_accum_steps", 1)))
     max_epochs = int(conf["training"]["epochs"])
@@ -835,32 +807,13 @@ def train_dr_classifier(
         )
 
     use_scheduler = bool(conf["training"].get("use_scheduler", True))
-    scheduler_name = str(conf["training"].get("scheduler_name", "reduce_on_plateau")).strip().lower()
     scheduler = None
-    scheduler_mode = "none"
-    if use_scheduler and scheduler_name in {"cosine", "cosine_annealing", "cosineannealing"}:
-        min_lr_value = float(conf["training"].get("scheduler_min_lr", 1e-8))
+    if use_scheduler:
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             optimizer,
             T_max=max(1, max_epochs),
-            eta_min=min_lr_value,
+            eta_min=float(conf["training"].get("scheduler_min_lr", 1e-8)),
         )
-        scheduler_mode = "cosine"
-    elif use_scheduler:
-        min_lr_ratio = float(conf["training"].get("scheduler_min_lr_ratio", 0.01))
-        if use_differential_lr:
-            min_lrs = [max(1e-10, float(pg["lr"]) * min_lr_ratio) for pg in optimizer.param_groups]
-            min_lr_value: float | list[float] = min_lrs
-        else:
-            min_lr_value = float(conf["training"].get("scheduler_min_lr", 1e-8))
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer,
-            mode="min",
-            factor=float(conf["training"].get("scheduler_factor", 0.5)),
-            patience=int(conf["training"].get("scheduler_patience", 3)),
-            min_lr=min_lr_value,
-        )
-        scheduler_mode = "plateau"
 
     best_f1 = -1.0
     wait = 0
@@ -874,7 +827,7 @@ def train_dr_classifier(
         "epoch_duration_seconds": [],
         "lr_group_names": [f"group_{i}" for i in range(len(optimizer.param_groups))],
         "optimizer_name": optimizer_name,
-        "scheduler_name": scheduler_name if use_scheduler else "none",
+        "scheduler_name": "cosine_annealing" if use_scheduler else "none",
         "loss_name": "focal" if use_focal_loss else "cross_entropy",
         "grad_accum_steps": int(grad_accum_steps),
         "train_started_at": train_started_at,
@@ -950,9 +903,7 @@ def train_dr_classifier(
 
         val_loss = val_sum / max(1, val_count)
         val_f1 = float(f1_score(y_true, y_pred, average="macro", zero_division=0))
-        if scheduler is not None and scheduler_mode == "plateau":
-            scheduler.step(val_loss)
-        elif scheduler is not None and scheduler_mode == "cosine":
+        if scheduler is not None:
             scheduler.step()
         current_lr = float(max(pg["lr"] for pg in optimizer.param_groups))
 

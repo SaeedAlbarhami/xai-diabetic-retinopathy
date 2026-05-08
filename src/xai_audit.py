@@ -1,11 +1,13 @@
 """XAI audit pipeline: per-sample Grad-CAM and SHAP loops plus aggregate tables."""
 from __future__ import annotations
 
+import copy
 import gc
 import time
 from pathlib import Path
 from typing import Any
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
@@ -24,15 +26,19 @@ from src.data import (
     _backbone_name,
     _cfg,
     _load_image_for_inference,
+    _load_json,
     _model_image_size,
     _save_json,
+    prepare_data_manifests,
 )
 from src.train import (
     _gradcam_status_log_path,
+    _load_latest_run_record,
     _load_model,
     _resolve_checkpoint_and_run_id,
     _save_latest_run_record,
     _shap_status_log_path,
+    build_validation_calibration_table,
     run_split_inference,
 )
 from src.xai_common import (
@@ -41,6 +47,7 @@ from src.xai_common import (
 from src.xai_gradcam import (
     _generate_gradcam,
     _resolve_gradcam_target_layer,
+    plot_gradcam_grid,
 )
 from src.xai_metrics import (
     _attribution_mass_ratios,
@@ -51,13 +58,13 @@ from src.xai_metrics import (
     _parse_faithfulness_k_list,
 )
 from src.xai_shap import (
-    _build_shap_explainer_with_known_warning_filter,
     _empty_mps_cache_if_available,
-    _make_shap_compatible,
     _pick_shap_map,
     _shap_to_2d,
     _shap_values_with_known_warning_filter,
     _should_retry_shap_on_cpu,
+    build_shap_session,
+    plot_shap_grid,
 )
 from src.xai_stats import (
     _bootstrap_pass_rate_ci,
@@ -739,42 +746,21 @@ def run_xai_analysis(
         if len(shap_target) == 0:
             raise RuntimeError("No target samples selected for SHAP")
 
-        train_manifest = _manifest_path(conf, "train", seed=seed)
-        train_df = pd.read_csv(train_manifest)
-        if len(train_df) == 0:
-            raise RuntimeError("Train manifest is empty; cannot build SHAP background")
-
-        _per_class_bg = max(1, bg_size // int(conf["data"]["num_classes"]))
-        bg_df = train_df.groupby("class_id", group_keys=False).apply(
-            lambda g: g.sample(n=min(len(g), _per_class_bg), random_state=int(seed))
-        ).reset_index(drop=True)
-        if len(bg_df) < bg_size:
-            extra = train_df.sample(n=bg_size - len(bg_df), random_state=int(seed))
-            bg_df = pd.concat([bg_df, extra], ignore_index=True)
-        bg_df = bg_df.head(bg_size)
         shap_dir = Path(conf["paths"]["figures_dir"]) / "shap"
         shap_dir.mkdir(parents=True, exist_ok=True)
         for _stale in shap_dir.glob("*.png"):
             _stale.unlink()
 
         def _run_shap_for_device(shap_device: torch.device) -> list[dict[str, Any]]:
-            if str(shap_device) == str(device):
-                shap_model = model
-            else:
-                shap_model = _load_model(conf, seed, shap_device, checkpoint=ckpt_path)
-            _make_shap_compatible(shap_model)
-            wrapper = _LogitWrapper(shap_model).to(shap_device)
-
-            bg_tensors = []
-            for _, b in bg_df.iterrows():
-                _, bt = _load_image_for_inference(
-                    b["image_path"],
-                    image_size=image_size,
-                    preprocessing_cfg=conf.get("preprocessing", {}),
-                )
-                bg_tensors.append(bt.squeeze(0))
-            background = torch.stack(bg_tensors, dim=0).to(shap_device)
-            explainer = _build_shap_explainer_with_known_warning_filter(wrapper, background)
+            shap_model, explainer = build_shap_session(
+                conf=conf,
+                seed=seed,
+                ckpt_path=ckpt_path,
+                primary_device=device,
+                shap_device=shap_device,
+                source_model=model,
+                bg_size=bg_size,
+            )
 
             rows: list[dict[str, Any]] = []
             total_shap = int(len(shap_target))
@@ -1017,9 +1003,6 @@ def run_xai_analysis(
     continuous_path = _xai_csv("rq_xai_continuous")
     continuous_df.to_csv(continuous_path, index=False)
 
-    proto_stub_path = _xai_csv("protopnet_stub")
-    pd.DataFrame([{"method": "ProtoPNetLite", "status": "planned_future_phase", "reason": "Planned future extension"}]).to_csv(proto_stub_path, index=False)
-
     return {
         "run_id": run_id,
         "rq1_table": str(rq1_path),
@@ -1032,8 +1015,503 @@ def run_xai_analysis(
         "rq_pairwise_table": str(pairwise_path),
         "rq_continuous_table": str(continuous_path),
         "shap_status": str(shap_status_path),
-        "protopnet_stub": str(proto_stub_path),
         "xai_targets_table": str(xai_targets_path),
         "xai_target_coverage_table": str(coverage_path),
     }
 
+
+def notebook_run_xai(
+    cfg_or_path: str | Path | dict[str, Any],
+    seed: int = 1988,
+    split: str = "test",
+    manifests: dict[str, str] | None = None,
+    checkpoint: str | Path | None = None,
+    safe_mode: bool = False,
+) -> dict[str, Any]:
+    conf = copy.deepcopy(_cfg(cfg_or_path))
+    split_key = str(split).strip().lower() or "test"
+    xai_cfg = conf.setdefault("xai", {})
+
+    if safe_mode:
+        xai_cfg["device"] = "cpu"
+        xai_cfg["max_targets"] = min(int(xai_cfg.get("max_targets", 128)), 24)
+        xai_cfg["shap_max_samples"] = min(int(xai_cfg.get("shap_max_samples", 128)), 24)
+        xai_cfg["shap_background_size"] = min(int(xai_cfg.get("shap_background_size", 64)), 12)
+    else:
+        xai_cfg.setdefault("device", conf.get("training", {}).get("device", "mps"))
+    xai_cfg["log_every_samples"] = max(1, int(xai_cfg.get("log_every_samples", 16)))
+
+    calibration_path = build_validation_calibration_table(
+        conf,
+        seed=int(seed),
+        manifests=manifests,
+        checkpoint=checkpoint,
+    )
+    xai_outputs = run_xai_analysis(
+        conf,
+        seed=int(seed),
+        split=split_key,
+        checkpoint=checkpoint,
+        predictions_csv=None,
+        shap_mode=str(xai_cfg.get("shap_mode", "subset")),
+        shap_max_samples=int(xai_cfg.get("shap_max_samples", 64)),
+    )
+
+    run_id = str(xai_outputs.get("run_id", ""))
+    if not run_id:
+        latest_payload = _load_latest_run_record(conf, int(seed))
+        if latest_payload:
+            run_id = str(latest_payload.get("run_id", ""))
+
+    predictions_path = (
+        Path(conf["paths"]["predictions_dir"]) / f"{run_id}_{split_key}_predictions.csv"
+        if run_id
+        else Path("")
+    )
+    predictions_df = pd.read_csv(predictions_path) if predictions_path.exists() else pd.DataFrame()
+
+    return {
+        "cfg_xai": conf,
+        "seed": int(seed),
+        "split": split_key,
+        "safe_mode": bool(safe_mode),
+        "xai_runtime_settings": {
+            "device": str(xai_cfg.get("device")),
+            "max_targets": int(xai_cfg.get("max_targets", 0)),
+            "shap_max_samples": int(xai_cfg.get("shap_max_samples", 0)),
+            "shap_background_size": int(xai_cfg.get("shap_background_size", 0)),
+            "log_every_samples": int(xai_cfg.get("log_every_samples", 1)),
+        },
+        "calibration_path": str(calibration_path),
+        "xai_outputs": xai_outputs,
+        "run_id": run_id,
+        "predictions_path": str(predictions_path),
+        "predictions_df": predictions_df,
+    }
+
+
+def notebook_load_xai_committee_summary(
+    cfg_or_path: str | Path | dict[str, Any],
+    seed: int = 1988,
+    split: str = "test",
+) -> dict[str, Any]:
+    conf = _cfg(cfg_or_path)
+    split_key = str(split).strip().lower() or "test"
+    tables_dir = Path(conf["paths"]["tables_dir"])
+
+    method_path = tables_dir / f"rq_xai_method_stats_seed{int(seed)}_{split_key}.csv"
+    pairwise_path = tables_dir / f"rq_xai_pairwise_seed{int(seed)}_{split_key}.csv"
+    continuous_path = tables_dir / f"rq_xai_continuous_seed{int(seed)}_{split_key}.csv"
+    coverage_path = tables_dir / f"xai_target_coverage_seed{int(seed)}_{split_key}.csv"
+    targets_path = tables_dir / f"xai_targets_seed{int(seed)}_{split_key}.csv"
+    correctness_path = tables_dir / f"rq_xai_pass_by_correctness_seed{int(seed)}_{split_key}.csv"
+
+    method_stats_df = pd.read_csv(method_path) if method_path.exists() else pd.DataFrame()
+    pairwise_df = pd.read_csv(pairwise_path) if pairwise_path.exists() else pd.DataFrame()
+    continuous_df = pd.read_csv(continuous_path) if continuous_path.exists() else pd.DataFrame()
+    coverage_df = pd.read_csv(coverage_path) if coverage_path.exists() else pd.DataFrame()
+    targets_df = pd.read_csv(targets_path) if targets_path.exists() else pd.DataFrame()
+    correctness_df = pd.read_csv(correctness_path) if correctness_path.exists() else pd.DataFrame()
+
+    if method_stats_df.empty:
+        raise RuntimeError(f"Missing or empty method stats table: {method_path}")
+
+    plot_df = method_stats_df[method_stats_df["method"].isin(["gradcam", "shap"])].copy()
+    plot_df = plot_df.set_index("method").reindex(["gradcam", "shap"]).reset_index()
+    plot_df["method"] = plot_df["method"].replace({"gradcam": "Grad-CAM", "shap": "SHAP"})
+
+    for col in [
+        "n",
+        "pass_rate",
+        "pass_rate_ci95_low",
+        "pass_rate_ci95_high",
+        "mean_border_ratio",
+        "mean_faith_delta_k20",
+        "pass_rule_border_ratio_max",
+        "pass_rule_faith_delta_k20_min",
+    ]:
+        if col in plot_df.columns:
+            plot_df[col] = pd.to_numeric(plot_df[col], errors="coerce")
+
+    summary_tbl = plot_df[
+        [
+            "method",
+            "n",
+            "pass_rate",
+            "pass_rate_ci95_low",
+            "pass_rate_ci95_high",
+            "mean_border_ratio",
+            "mean_faith_delta_k20",
+        ]
+    ].copy()
+    summary_tbl.columns = [
+        "Method",
+        "N",
+        "Rule-Satisfied (descriptive)",
+        "CI95 Low",
+        "CI95 High",
+        "Mean Border Ratio",
+        "Mean Faithfulness (k=20%)",
+    ]
+    for col in ["Rule-Satisfied (descriptive)", "CI95 Low", "CI95 High"]:
+        summary_tbl[col] = (pd.to_numeric(summary_tbl[col], errors="coerce") * 100.0).round(1).astype(str) + "%"
+    for col in ["Mean Border Ratio", "Mean Faithfulness (k=20%)"]:
+        summary_tbl[col] = pd.to_numeric(summary_tbl[col], errors="coerce").round(3)
+
+    rate = pd.to_numeric(plot_df["pass_rate"], errors="coerce").to_numpy(dtype=float)
+    low = pd.to_numeric(plot_df["pass_rate_ci95_low"], errors="coerce").to_numpy(dtype=float)
+    high = pd.to_numeric(plot_df["pass_rate_ci95_high"], errors="coerce").to_numpy(dtype=float)
+    err_low = np.clip(rate - low, 0.0, None)
+    err_high = np.clip(high - rate, 0.0, None)
+
+    fig, ax = plt.subplots(figsize=(6.2, 4.2))
+    ax.bar(plot_df["method"], rate, yerr=[err_low, err_high], capsize=6, color=["#4C78A8", "#F58518"])
+    ax.set_ylim(0, 1)
+    ax.set_ylabel("Proportion satisfying threshold rule")
+    ax.set_title("Operational Threshold Summary (Descriptive Only)")
+    for i, value in enumerate(rate):
+        if np.isfinite(value):
+            ax.text(i, min(float(value) + 0.03, 0.98), f"{float(value) * 100.0:.1f}%", ha="center", va="bottom", fontsize=10)
+    fig.tight_layout()
+
+    delta_text = "N/A"
+    p_text = "N/A"
+    if len(pairwise_df):
+        row = pairwise_df.iloc[0]
+        delta = pd.to_numeric(row.get("delta_pass_rate", np.nan), errors="coerce")
+        pval = pd.to_numeric(row.get("mcnemar_pvalue_exact", np.nan), errors="coerce")
+        if np.isfinite(delta):
+            delta_text = f"{float(delta) * 100.0:.1f}%"
+        if np.isfinite(pval):
+            p_text = f"{float(pval):.4f}"
+
+    coverage_text = "coverage file not found"
+    if len(coverage_df):
+        def _missing(col: str) -> int:
+            if col not in coverage_df.columns:
+                return -1
+            return int((pd.to_numeric(coverage_df[col], errors="coerce") == 0).sum())
+        coverage_text = f"coverage check: gradcam_missing={_missing('gradcam_done')}, shap_missing={_missing('shap_done')}"
+
+    scope_text = "scope unavailable"
+    if "evaluation_scope" in method_stats_df.columns and len(method_stats_df):
+        non_null_scope = method_stats_df["evaluation_scope"].dropna()
+        if len(non_null_scope):
+            scope_text = str(non_null_scope.iloc[0])
+
+    rule_border = 0.35
+    rule_faith = 0.0
+    if "pass_rule_border_ratio_max" in method_stats_df.columns and len(method_stats_df):
+        vals = pd.to_numeric(method_stats_df["pass_rule_border_ratio_max"], errors="coerce").dropna()
+        if len(vals):
+            rule_border = float(vals.iloc[0])
+    if "pass_rule_faith_delta_k20_min" in method_stats_df.columns and len(method_stats_df):
+        vals = pd.to_numeric(method_stats_df["pass_rule_faith_delta_k20_min"], errors="coerce").dropna()
+        if len(vals):
+            rule_faith = float(vals.iloc[0])
+
+    audit_n = int(len(targets_df))
+    correctness_note = "correct/wrong split table unavailable"
+    if len(correctness_df):
+        correctness_note = "correct/wrong split is provided in Section 7 advanced table"
+
+    if len(pairwise_df):
+        g_rate = pd.to_numeric(pairwise_df.iloc[0].get("gradcam_pass_rate", np.nan), errors="coerce")
+        s_rate = pd.to_numeric(pairwise_df.iloc[0].get("shap_pass_rate", np.nan), errors="coerce")
+    else:
+        g_rate = s_rate = np.nan
+    if np.isfinite(g_rate) and np.isfinite(s_rate) and abs(float(g_rate) - float(s_rate)) > 1e-6:
+        if float(g_rate) > float(s_rate):
+            direction_text = "Grad-CAM > SHAP"
+        else:
+            direction_text = "SHAP > Grad-CAM"
+    else:
+        direction_text = "methods equivalent"
+
+    delta_mag_text = "N/A"
+    if np.isfinite(delta_raw := (pd.to_numeric(pairwise_df.iloc[0].get("delta_pass_rate", np.nan), errors="coerce")
+                                  if len(pairwise_df) else np.nan)):
+        delta_mag_text = f"{abs(float(delta_raw)) * 100.0:.1f} pp"
+    bottom_line_markdown = (
+        f"> **Operational threshold summary (descriptive only):** under the project-specific rule "
+        f"`border_ratio ≤ {rule_border:.2f}` AND `Δ_k20 > {rule_faith:.2f}`, "
+        f"{direction_text} on pass rate (gap **{delta_mag_text}**, McNemar exact p=**{p_text}**).\n"
+        f"> **Caution:** the thresholded pass rate compresses continuous evidence, discards "
+        f"magnitude information, and can introduce boundary effects around arbitrary cut-offs; "
+        f"refer to the primary continuous analysis for the main finding.\n"
+        f"> **Audit scope:** `{scope_text}` with `N={audit_n}` targets.\n"
+        f"> **Consistency check:** {coverage_text}; {correctness_note}."
+    )
+
+    continuous_table = _format_continuous_table_for_display(continuous_df)
+    continuous_bottom_line = _format_continuous_bottom_line(continuous_df)
+
+    return {
+        "cfg": conf,
+        "seed": int(seed),
+        "split": split_key,
+        "method_stats_path": str(method_path),
+        "pairwise_path": str(pairwise_path),
+        "continuous_path": str(continuous_path),
+        "coverage_path": str(coverage_path),
+        "targets_path": str(targets_path),
+        "correctness_path": str(correctness_path),
+        "method_stats_df": method_stats_df,
+        "pairwise_df": pairwise_df,
+        "continuous_df": continuous_df,
+        "continuous_table": continuous_table,
+        "continuous_bottom_line_markdown": continuous_bottom_line,
+        "coverage_df": coverage_df,
+        "targets_df": targets_df,
+        "correctness_df": correctness_df,
+        "summary_table": summary_tbl,
+        "pass_rate_fig": fig,
+        "bottom_line_markdown": bottom_line_markdown,
+    }
+
+
+def notebook_load_xai_advanced_audit(
+    cfg_or_path: str | Path | dict[str, Any],
+    seed: int = 1988,
+    split: str = "test",
+    xai_outputs: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    conf = _cfg(cfg_or_path)
+    split_key = str(split).strip().lower() or "test"
+    tables_dir = Path(conf["paths"]["tables_dir"])
+
+    rq1_path = tables_dir / f"rq1_gradcam_seed{int(seed)}_{split_key}.csv"
+    rq2_path = tables_dir / f"rq2_shap_seed{int(seed)}_{split_key}.csv"
+    pair_path = tables_dir / f"rq_xai_pairwise_seed{int(seed)}_{split_key}.csv"
+    pass_by_class_path = tables_dir / f"rq_xai_pass_by_class_seed{int(seed)}_{split_key}.csv"
+    pass_by_correctness_path = tables_dir / f"rq_xai_pass_by_correctness_seed{int(seed)}_{split_key}.csv"
+
+    rq1_df = pd.read_csv(rq1_path) if rq1_path.exists() else pd.DataFrame()
+    rq2_df = pd.read_csv(rq2_path) if rq2_path.exists() else pd.DataFrame()
+    pair_df = pd.read_csv(pair_path) if pair_path.exists() else pd.DataFrame()
+    classwise_df = pd.read_csv(pass_by_class_path) if pass_by_class_path.exists() else pd.DataFrame()
+    correctness_df = pd.read_csv(pass_by_correctness_path) if pass_by_correctness_path.exists() else pd.DataFrame()
+
+    correctness_view = pd.DataFrame()
+    if len(correctness_df):
+        correctness_view = correctness_df.copy()
+        for col in ["pass_rate", "mean_border_ratio", "mean_faith_delta_k20"]:
+            correctness_view[col] = pd.to_numeric(correctness_view[col], errors="coerce").round(3)
+        correctness_view = correctness_view.sort_values(["method", "group"]).reset_index(drop=True)
+
+    classwise_view = pd.DataFrame()
+    if len(classwise_df):
+        classwise_view = classwise_df.copy()
+        classwise_view["pass_rate"] = pd.to_numeric(classwise_view["pass_rate"], errors="coerce").round(3)
+        classwise_view = classwise_view.sort_values(["method", "class_id"]).reset_index(drop=True)
+
+    discord_df = pd.DataFrame()
+    if (
+        len(rq1_df)
+        and len(rq2_df)
+        and {"sample_id", "gradcam_pass"}.issubset(rq1_df.columns)
+        and {"sample_id", "shap_pass"}.issubset(rq2_df.columns)
+    ):
+        discord_df = rq1_df[
+            ["sample_id", "target_class", "pred_class", "confidence", "gradcam_pass"]
+        ].merge(
+            rq2_df[["sample_id", "shap_pass"]],
+            on="sample_id",
+            how="inner",
+        )
+        discord_df = discord_df[
+            discord_df["gradcam_pass"].astype(int) != discord_df["shap_pass"].astype(int)
+        ].sort_values("sample_id").reset_index(drop=True)
+
+    def _load_status_payload(path_like: str | Path | None) -> dict[str, Any]:
+        if path_like is None:
+            return {}
+        p = Path(str(path_like))
+        if not p.exists():
+            return {}
+        try:
+            return _load_json(p)
+        except Exception:
+            return {}
+
+    run_id = ""
+    if isinstance(xai_outputs, dict):
+        run_id = str(xai_outputs.get("run_id", "") or "")
+    if not run_id:
+        latest_payload = _load_latest_run_record(conf, int(seed))
+        if latest_payload:
+            run_id = str(latest_payload.get("run_id", "") or "")
+
+    grad_status_path: Path | None = None
+    shap_status_path: Path | None = None
+    if isinstance(xai_outputs, dict):
+        grad_raw = str(xai_outputs.get("gradcam_status", "") or "").strip()
+        shap_raw = str(xai_outputs.get("shap_status", "") or "").strip()
+        grad_status_path = Path(grad_raw) if grad_raw else None
+        shap_status_path = Path(shap_raw) if shap_raw else None
+    if grad_status_path is None and run_id:
+        grad_status_path = _gradcam_status_log_path(conf, run_id, split_key)
+    if shap_status_path is None and run_id:
+        shap_status_path = _shap_status_log_path(conf, run_id, split_key)
+
+    grad_status_payload = _load_status_payload(grad_status_path)
+    shap_status_payload = _load_status_payload(shap_status_path)
+
+    status_df = pd.DataFrame(
+        [
+            {
+                "method": "gradcam",
+                "status": grad_status_payload.get("status", "unknown"),
+                "reason_or_error": grad_status_payload.get("reason", ""),
+                "supported_layers": ", ".join(grad_status_payload.get("supported_layers", []) or []),
+                "requested_layers": ", ".join(grad_status_payload.get("requested_layers", []) or []),
+                "target_rows": grad_status_payload.get("target_rows", ""),
+            },
+            {
+                "method": "shap",
+                "status": shap_status_payload.get("status", "unknown"),
+                "reason_or_error": shap_status_payload.get("error", ""),
+                "attempted_device": shap_status_payload.get("attempted_device", ""),
+                "final_device": shap_status_payload.get("final_device", ""),
+                "fallback_used": shap_status_payload.get("fallback_used", ""),
+                "target_rows": shap_status_payload.get("target_rows", ""),
+            },
+        ]
+    )
+
+    return {
+        "cfg": conf,
+        "seed": int(seed),
+        "split": split_key,
+        "rq1_path": str(rq1_path),
+        "rq2_path": str(rq2_path),
+        "pair_path": str(pair_path),
+        "pass_by_class_path": str(pass_by_class_path),
+        "pass_by_correctness_path": str(pass_by_correctness_path),
+        "rq1_df": rq1_df,
+        "rq2_df": rq2_df,
+        "pair_df": pair_df,
+        "classwise_df": classwise_df,
+        "correctness_df": correctness_df,
+        "correctness_view": correctness_view,
+        "classwise_view": classwise_view,
+        "discord_df": discord_df,
+        "status_df": status_df,
+        "gradcam_status_path": str(grad_status_path) if grad_status_path is not None else "",
+        "shap_status_path": str(shap_status_path) if shap_status_path is not None else "",
+    }
+
+
+def notebook_run_visual_review(
+    cfg_or_path: str | Path | dict[str, Any],
+    seed: int = 1988,
+    split: str = "test",
+    wanted_classes: tuple[int, ...] = (0, 2, 3, 4),
+    safe_mode: bool = False,
+) -> dict[str, Any]:
+    conf = copy.deepcopy(_cfg(cfg_or_path))
+    split_key = str(split).strip().lower() or "test"
+    split_key_to_manifest_key = {
+        "train": "train_split",
+        "val": "val_split",
+        "test": "test_full",
+    }
+    if split_key not in split_key_to_manifest_key:
+        raise ValueError(f"split must be one of train/val/test, got: {split}")
+
+    xai_cfg = conf.setdefault("xai", {})
+    if safe_mode:
+        xai_cfg["device"] = "cpu"
+        xai_cfg["shap_background_size"] = min(int(xai_cfg.get("shap_background_size", 64)), 8)
+        max_shap_images = 2
+    else:
+        xai_cfg.setdefault("device", conf.get("training", {}).get("device", "mps"))
+        max_shap_images = 4
+
+    xai_shap_bg = int(xai_cfg.get("shap_background_size", 64))
+    xai_dpi = int(xai_cfg.get("figure_dpi", 180))
+    export_dpi = min(600, max(240, xai_dpi))
+    shap_panel_size = (3.0, 3.4)
+    gradcam_pair_size = (6.0, 3.4)
+
+    manifests = prepare_data_manifests(conf, seed=int(seed))
+    manifest_path = Path(manifests[split_key_to_manifest_key[split_key]])
+    manifest_df = pd.read_csv(manifest_path)
+    if len(manifest_df) == 0:
+        raise RuntimeError(f"Empty {split_key} manifest: {manifest_path}")
+
+    class_targets = [int(c) for c in wanted_classes]
+    samples: list[tuple[str, int]] = []
+    for cls in class_targets:
+        sub = manifest_df[manifest_df["class_id"].astype(int) == int(cls)]
+        if len(sub) == 0:
+            continue
+        row = sub.sample(n=1, random_state=int(seed)).iloc[0]
+        samples.append((str(row["image_path"]), int(row["class_id"])))
+
+    if len(samples) == 0:
+        row = manifest_df.sample(n=1, random_state=int(seed)).iloc[0]
+        samples = [(str(row["image_path"]), int(row["class_id"]))]
+
+    gradcam_save_path = Path(conf["paths"]["figures_dir"]) / "gradcam_demo_grid.png"
+    shap_save_path = Path(conf["paths"]["figures_dir"]) / "shap_demo_grid.png"
+
+    gradcam_fig: plt.Figure | None = None
+    shap_fig: plt.Figure | None = None
+    warnings_list: list[str] = []
+    try:
+        gradcam_fig = plot_gradcam_grid(
+            cfg_path=conf,
+            seed=int(seed),
+            samples=samples,
+            ncols=2,
+            gradcam_layer=str(xai_cfg.get("gradcam_layer", "layer4")),
+            alpha=0.45,
+            figsize_per_pair=gradcam_pair_size,
+            save_path=gradcam_save_path,
+            dpi=export_dpi,
+        )
+    except Exception as exc:
+        warnings_list.append(f"Grad-CAM grid unavailable: {exc}")
+
+    shap_subset = samples[:max_shap_images]
+    shap_paths = [p for p, _ in shap_subset]
+    shap_true_classes = [int(c) for _, c in shap_subset]
+    try:
+        shap_fig = plot_shap_grid(
+            cfg_path=conf,
+            seed=int(seed),
+            image_paths=shap_paths,
+            background_size=xai_shap_bg,
+            vmax_percentile=99.5,
+            save_path=shap_save_path,
+            dpi=export_dpi,
+            true_classes=shap_true_classes,
+            show_correctness_border=True,
+            panel_size=shap_panel_size,
+        )
+    except Exception as exc:
+        warnings_list.append(f"SHAP grid unavailable: {exc}")
+
+    return {
+        "cfg_xai": conf,
+        "seed": int(seed),
+        "split": split_key,
+        "safe_mode": bool(safe_mode),
+        "manifest_path": str(manifest_path),
+        "manifest_df": manifest_df,
+        "samples": samples,
+        "gradcam_fig": gradcam_fig,
+        "shap_fig": shap_fig,
+        "gradcam_path": str(gradcam_save_path),
+        "shap_path": str(shap_save_path),
+        "settings": {
+            "device": str(xai_cfg.get("device")),
+            "shap_background_size": int(xai_shap_bg),
+            "shap_images": int(max_shap_images),
+            "export_dpi": int(export_dpi),
+            "shap_panel_size": shap_panel_size,
+            "gradcam_pair_size": gradcam_pair_size,
+        },
+        "warnings": warnings_list,
+    }
