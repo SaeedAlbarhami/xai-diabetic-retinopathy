@@ -1,11 +1,11 @@
 method,class_id,class_name,n,pass_rate
 gradcam,0,No_DR,24,0.5416666666666666
 gradcam,1,Mild,24,0.625
-gradcam,2,Moderate,24,0.6666666666666666
+gradcam,2,Moderate,24,0.625
 gradcam,3,Severe,24,0.3333333333333333
 gradcam,4,Proliferate_DR,24,0.625
 shap,0,No_DR,24,0.7916666666666666
 shap,1,Mild,24,0.08333333333333333
-shap,2,Moderate,24,0.4583333333333333
-shap,3,Severe,24,0.4166666666666667
+shap,2,Moderate,24,0.5
+shap,3,Severe,24,0.375
 shap,4,Proliferate_DR,24,0.20833333333333334

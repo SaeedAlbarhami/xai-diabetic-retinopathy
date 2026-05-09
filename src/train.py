@@ -1140,7 +1140,7 @@ def evaluate_pipeline_outputs(cfg: str | Path | dict[str, Any], seed: int = 1988
 
     df = pd.read_csv(pred_path)
     num_classes = int(conf["data"]["num_classes"])
-    high_conf_thr = float(conf["evaluation"].get("high_conf_threshold", 0.80))
+    high_conf_thr = float(conf.get("evaluation", {}).get("high_conf_threshold", 0.0))
     run_id = _run_id_from_predictions_path(pred_path, split=split)
     if not run_id:
         try:

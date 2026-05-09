@@ -102,6 +102,3 @@ xai:
   stats_bootstrap_iters: 1000
   stats_bootstrap_seed: 1988
   max_targets: 120
-
-evaluation:
-  high_conf_threshold: 0.00

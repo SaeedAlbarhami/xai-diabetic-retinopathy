@@ -246,6 +246,120 @@ def _build_xai_pass_by_class_table(
     return grouped[out_cols]
 
 
+def _build_xai_mask_ablation_table(
+    rq1_df: pd.DataFrame,
+    rq2_df: pd.DataFrame,
+) -> pd.DataFrame:
+    """Long-format paired Grad-CAM vs SHAP comparison on each metric, reported on
+    the masked attribution AND on the raw (pre-mask) attribution where the raw
+    columns are available. Used for the report's mask-ablation table."""
+    from scipy.stats import wilcoxon  # local import; scipy is already a dependency
+
+    if len(rq1_df) == 0 or len(rq2_df) == 0:
+        return pd.DataFrame()
+
+    merged = rq1_df.merge(rq2_df, on="sample_id", suffixes=("_g", "_s"))
+    n = int(len(merged))
+    if n == 0:
+        return pd.DataFrame()
+
+    metric_specs = [
+        ("border_ratio", "lower_is_better"),
+        ("retina_ratio", "higher_is_better"),
+        ("faith_delta_k10", "higher_is_better"),
+        ("faith_delta_k20", "higher_is_better"),
+        ("faith_delta_k30", "higher_is_better"),
+        ("aopc_delta", "higher_is_better"),
+    ]
+
+    def _paired(g: np.ndarray, s: np.ndarray, direction: str) -> dict[str, Any]:
+        diff = g - s
+        paired_mean = float(np.mean(diff))
+        paired_std = float(np.std(diff, ddof=1))
+        dz = paired_mean / paired_std if paired_std > 1e-12 else 0.0
+        try:
+            _, p = wilcoxon(g, s, alternative="two-sided")
+            p = float(p)
+        except ValueError:
+            p = float("nan")
+        if direction == "lower_is_better":
+            winner = "gradcam" if paired_mean < 0 else "shap"
+        else:
+            winner = "gradcam" if paired_mean > 0 else "shap"
+        return {"paired_mean_diff": paired_mean, "wilcoxon_p": p, "cohen_dz": float(dz), "winner": winner}
+
+    rows: list[dict[str, Any]] = []
+    for base, direction in metric_specs:
+        gcol, scol = f"{base}_g", f"{base}_s"
+        if gcol not in merged.columns or scol not in merged.columns:
+            continue
+        g = merged[gcol].to_numpy(dtype=float)
+        s = merged[scol].to_numpy(dtype=float)
+        rows.append({
+            "metric": base, "masked": True, "n_paired": n,
+            "gradcam_mean": float(np.mean(g)), "gradcam_median": float(np.median(g)),
+            "shap_mean": float(np.mean(s)), "shap_median": float(np.median(s)),
+            **_paired(g, s, direction),
+            "direction": direction,
+        })
+        graw, sraw = f"{base}_raw_g", f"{base}_raw_s"
+        if graw in merged.columns and sraw in merged.columns:
+            gr = merged[graw].to_numpy(dtype=float)
+            sr = merged[sraw].to_numpy(dtype=float)
+            rows.append({
+                "metric": base, "masked": False, "n_paired": n,
+                "gradcam_mean": float(np.mean(gr)), "gradcam_median": float(np.median(gr)),
+                "shap_mean": float(np.mean(sr)), "shap_median": float(np.median(sr)),
+                **_paired(gr, sr, direction),
+                "direction": direction,
+            })
+    return pd.DataFrame(rows)
+
+
+def _build_xai_per_pred_class_table(
+    rq1_df: pd.DataFrame,
+    rq2_df: pd.DataFrame,
+    class_names: list[str],
+    pass_border_ratio_max: float,
+    pass_faith_delta_min: float,
+) -> pd.DataFrame:
+    """Per-pred-class pass-rate and mean BR/Δk20 for both methods on the masked
+    metrics. The operational pass rule is `border_ratio <= pass_border_ratio_max`
+    AND `faith_delta_k20 > pass_faith_delta_min`. N varies because targets are
+    sampled by true class but pass rates are reported by predicted class."""
+    out_cols = [
+        "pred_class", "class_name", "n",
+        "gradcam_pass_rate", "shap_pass_rate",
+        "gradcam_mean_border", "shap_mean_border",
+        "gradcam_mean_faith_k20", "shap_mean_faith_k20",
+    ]
+    if len(rq1_df) == 0 or len(rq2_df) == 0 or "pred_class" not in rq1_df.columns:
+        return pd.DataFrame(columns=out_cols)
+
+    g_df = rq1_df.copy()
+    s_df = rq2_df.copy()
+    g_df["_pass"] = ((g_df["border_ratio"] <= pass_border_ratio_max) & (g_df["faith_delta_k20"] > pass_faith_delta_min)).astype(int)
+    s_df["_pass"] = ((s_df["border_ratio"] <= pass_border_ratio_max) & (s_df["faith_delta_k20"] > pass_faith_delta_min)).astype(int)
+
+    rows: list[dict[str, Any]] = []
+    classes = sorted(set(g_df["pred_class"].astype(int)) | set(s_df["pred_class"].astype(int)))
+    for cls in classes:
+        gs = g_df[g_df["pred_class"].astype(int) == cls]
+        ss = s_df[s_df["pred_class"].astype(int) == cls]
+        rows.append({
+            "pred_class": int(cls),
+            "class_name": class_names[cls] if 0 <= cls < len(class_names) else str(cls),
+            "n": int(len(gs)),
+            "gradcam_pass_rate": float(gs["_pass"].mean()) if len(gs) else float("nan"),
+            "shap_pass_rate": float(ss["_pass"].mean()) if len(ss) else float("nan"),
+            "gradcam_mean_border": float(gs["border_ratio"].mean()) if len(gs) else float("nan"),
+            "shap_mean_border": float(ss["border_ratio"].mean()) if len(ss) else float("nan"),
+            "gradcam_mean_faith_k20": float(gs["faith_delta_k20"].mean()) if len(gs) else float("nan"),
+            "shap_mean_faith_k20": float(ss["faith_delta_k20"].mean()) if len(ss) else float("nan"),
+        })
+    return pd.DataFrame(rows, columns=out_cols)
+
+
 def _format_continuous_table_for_display(continuous_df: pd.DataFrame) -> pd.DataFrame:
     if continuous_df is None or continuous_df.empty:
         return pd.DataFrame()
@@ -446,7 +560,7 @@ def run_xai_analysis(
     pred_path = Path(predictions_csv) if predictions_csv else Path(run_split_inference(conf, seed=seed, split=split))
 
     pred_df = pd.read_csv(pred_path)
-    high_conf_thr = float(conf["evaluation"].get("high_conf_threshold", 0.80))
+    high_conf_thr = float(conf.get("evaluation", {}).get("high_conf_threshold", 0.0))
     balance_targets = bool(xai_cfg.get("balance_targets_by_class", True))
     fill_missing_class = bool(xai_cfg.get("balance_fill_from_all", True))
     target_class_col = str(xai_cfg.get("target_balance_class_col", "true_class"))
@@ -1003,6 +1117,20 @@ def run_xai_analysis(
     continuous_path = _xai_csv("rq_xai_continuous")
     continuous_df.to_csv(continuous_path, index=False)
 
+    mask_ablation_df = _build_xai_mask_ablation_table(rq1_df=rq1_df, rq2_df=rq2_df)
+    mask_ablation_path = _xai_csv("rq_xai_mask_ablation")
+    mask_ablation_df.to_csv(mask_ablation_path, index=False)
+
+    per_pred_class_df = _build_xai_per_pred_class_table(
+        rq1_df=rq1_df,
+        rq2_df=rq2_df,
+        class_names=class_names,
+        pass_border_ratio_max=pass_border_ratio_max,
+        pass_faith_delta_min=pass_faith_delta_min,
+    )
+    per_pred_class_path = _xai_csv("rq_xai_per_class")
+    per_pred_class_df.to_csv(per_pred_class_path, index=False)
+
     return {
         "run_id": run_id,
         "rq1_table": str(rq1_path),
@@ -1014,6 +1142,8 @@ def run_xai_analysis(
         "rq_pass_by_class_table": str(pass_by_class_path),
         "rq_pairwise_table": str(pairwise_path),
         "rq_continuous_table": str(continuous_path),
+        "rq_mask_ablation_table": str(mask_ablation_path),
+        "rq_per_class_table": str(per_pred_class_path),
         "shap_status": str(shap_status_path),
         "xai_targets_table": str(xai_targets_path),
         "xai_target_coverage_table": str(coverage_path),
@@ -1174,14 +1304,9 @@ def notebook_load_xai_committee_summary(
             ax.text(i, min(float(value) + 0.03, 0.98), f"{float(value) * 100.0:.1f}%", ha="center", va="bottom", fontsize=10)
     fig.tight_layout()
 
-    delta_text = "N/A"
     p_text = "N/A"
     if len(pairwise_df):
-        row = pairwise_df.iloc[0]
-        delta = pd.to_numeric(row.get("delta_pass_rate", np.nan), errors="coerce")
-        pval = pd.to_numeric(row.get("mcnemar_pvalue_exact", np.nan), errors="coerce")
-        if np.isfinite(delta):
-            delta_text = f"{float(delta) * 100.0:.1f}%"
+        pval = pd.to_numeric(pairwise_df.iloc[0].get("mcnemar_pvalue_exact", np.nan), errors="coerce")
         if np.isfinite(pval):
             p_text = f"{float(pval):.4f}"
 
