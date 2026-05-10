@@ -19,7 +19,6 @@ except ImportError:
     LayerGradCam = None
 
 from src.data import (
-    _backbone_name,
     _cfg,
     _load_image_for_inference,
     _model_image_size,
@@ -46,7 +45,6 @@ from src.xai_viz import (
 def _resolve_gradcam_target_layer(
     model: DRClassifier,
     layer_name: str,
-    backbone_hint: str = "",
 ) -> tuple[nn.Module | None, str, str]:
     layer_key = str(layer_name).strip().lower()
     if layer_key not in {"layer2", "layer3", "layer4"}:
@@ -70,7 +68,6 @@ def _generate_gradcam(
     device: torch.device,
     conf: dict,
     overlay_dpi: int = 180,
-    backbone_hint: str = "",
 ) -> tuple[str, np.ndarray, np.ndarray]:
     if LayerGradCam is None:
         raise RuntimeError("captum is required for Grad-CAM. Install with `pip install captum==0.7.0`.")
@@ -79,7 +76,6 @@ def _generate_gradcam(
     target_layer, resolved_layer_name, reason = _resolve_gradcam_target_layer(
         model=model,
         layer_name=layer_name,
-        backbone_hint=backbone_hint,
     )
     if target_layer is None:
         raise ValueError(reason or f"Unable to resolve Grad-CAM layer '{layer_name}'.")
@@ -116,7 +112,6 @@ def _gradcam_heatmap_for_display(
     layer_name: str,
     output_size: tuple[int, int],
     device: torch.device,
-    backbone_hint: str = "",
 ) -> np.ndarray:
     if LayerGradCam is None:
         raise RuntimeError("captum is required for Grad-CAM. Install with `pip install captum==0.7.0`.")
@@ -124,7 +119,6 @@ def _gradcam_heatmap_for_display(
     target_layer, _, reason = _resolve_gradcam_target_layer(
         model=model,
         layer_name=layer_name,
-        backbone_hint=backbone_hint,
     )
     if target_layer is None:
         raise ValueError(reason or f"Unable to resolve Grad-CAM layer '{layer_name}'.")
@@ -162,7 +156,6 @@ def plot_gradcam_grid(
     conf = _cfg(cfg_path)
     device = _resolve_xai_device(conf)
     image_size = _model_image_size(conf)
-    backbone = _backbone_name(conf)
     label_order = list(conf["data"]["label_order"])
     out_dpi = int(dpi if dpi is not None else conf.get("xai", {}).get("figure_dpi", 180))
 
@@ -172,10 +165,9 @@ def plot_gradcam_grid(
     _, _, gradcam_reason = _resolve_gradcam_target_layer(
         model=model,
         layer_name=gradcam_layer,
-        backbone_hint=backbone,
     )
     if gradcam_reason:
-        raise ValueError(f"plot_gradcam_grid cannot run Grad-CAM for backbone={backbone}: {gradcam_reason}")
+        raise ValueError(f"plot_gradcam_grid cannot run Grad-CAM: {gradcam_reason}")
 
     n = len(samples)
     cols = max(1, int(ncols))
@@ -206,7 +198,6 @@ def plot_gradcam_grid(
             layer_name=gradcam_layer,
             output_size=(base.shape[1], base.shape[0]),
             device=device,
-            backbone_hint=backbone,
         )
         overlay = _overlay(base, heat, alpha=float(alpha), cmap_name=str(cmap_name))
 
@@ -315,7 +306,6 @@ def plot_gradcam_class_grid(
     image_size = _model_image_size(conf)
     num_classes = int(conf["data"]["num_classes"])
     label_order = list(conf["data"]["label_order"])
-    backbone = _backbone_name(conf)
     out_dpi = int(dpi if dpi is not None else conf.get("xai", {}).get("figure_dpi", 180))
     layer_name = str(gradcam_layer or conf.get("xai", {}).get("gradcam_layer", "layer4")).strip().lower()
 
@@ -343,7 +333,6 @@ def plot_gradcam_class_grid(
                 layer_name=layer_name,
                 output_size=(out_w, out_h),
                 device=device,
-                backbone_hint=backbone,
             )
             heat = heat * _attribution_retina_mask(heat.shape, conf)
             class_maps.append(heat.astype(np.float32))

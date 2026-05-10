@@ -11,6 +11,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
+import torch.nn as nn
 
 try:
     import shap
@@ -52,7 +53,6 @@ from src.xai_gradcam import (
 from src.xai_metrics import (
     _attribution_mass_ratios,
     _attribution_retina_mask,
-    _faithfulness_delta,
     _faithfulness_multi_k,
     _k_to_col_name,
     _parse_faithfulness_k_list,
@@ -92,6 +92,57 @@ def _xai_pass_rule_thresholds(conf: dict[str, Any]) -> tuple[float, float]:
     border_ratio_max = float(xai_cfg.get("pass_border_ratio_max", 0.35))
     faith_delta_min = float(xai_cfg.get("pass_faith_delta_min", 0.0))
     return border_ratio_max, faith_delta_min
+
+
+def _score_attribution(
+    *,
+    model: nn.Module,
+    image_tensor: torch.Tensor,
+    score_map: np.ndarray,
+    raw_ratios: dict[str, float],
+    pred_class: int,
+    k_list: list[float],
+    bootstrap_seed: int,
+    pass_border_ratio_max: float,
+    pass_faith_delta_min: float,
+) -> dict[str, Any]:
+    """Per-row metric block shared by Grad-CAM and SHAP audits.
+
+    Returns the masked-attribution scores: border/retina ratios (masked + raw),
+    faithfulness Δ_k (one entry per k in ``k_list``), the headline
+    ``faith_delta_k20`` column used by the operational pass rule, AOPC, and the
+    operational pass flags. The pass flag against the (border, k20) rule is
+    returned under the key ``_pass_flag`` so the caller can rename it to
+    ``gradcam_pass`` or ``shap_pass``.
+    """
+    ratios = _attribution_mass_ratios(score_map)
+    faith_by_k, aopc_delta = _faithfulness_multi_k(
+        model=model,
+        image_tensor=image_tensor,
+        score_map=score_map,
+        pred_class=pred_class,
+        k_list=k_list,
+        random_seed=bootstrap_seed,
+    )
+    faith_k20 = float(faith_by_k["faith_delta_k20"])
+    pass_flag = _xai_pass_flag(
+        border_ratio=float(ratios["border_ratio"]),
+        faith_delta=faith_k20,
+        border_ratio_max=pass_border_ratio_max,
+        faith_delta_min=pass_faith_delta_min,
+    )
+    aopc_pass = int(aopc_delta > 0.0) if not np.isnan(aopc_delta) else 0
+    return {
+        "border_ratio": float(ratios["border_ratio"]),
+        "retina_ratio": float(ratios["retina_ratio"]),
+        "border_ratio_raw": float(raw_ratios["border_ratio"]),
+        "retina_ratio_raw": float(raw_ratios["retina_ratio"]),
+        "faithfulness_delta": faith_k20,
+        **faith_by_k,
+        "aopc_delta": float(aopc_delta),
+        "aopc_pass": aopc_pass,
+        "_pass_flag": pass_flag,
+    }
 
 
 def _build_xai_method_stats_row(
@@ -434,7 +485,6 @@ def _format_continuous_bottom_line(continuous_df: pd.DataFrame) -> str:
 
 def _choose_xai_targets(
     df: pd.DataFrame,
-    high_conf_threshold: float,
     max_targets: int | None = None,
     num_classes: int = 5,
     class_col: str = "true_class",
@@ -442,15 +492,11 @@ def _choose_xai_targets(
     fill_missing_from_all: bool = True,
 ) -> pd.DataFrame:
     """Pick the XAI audit subset, aiming for ``max_targets / num_classes`` per
-    ``class_col``. Perfect balance is a target, not a guarantee: if a rare
-    class has fewer high-confidence samples than the per-class quota, the
-    filler pass tops up from remaining classes to reach ``max_targets`` total.
-    Actual per-class Ns will therefore drift from the nominal quota on
-    imbalanced datasets (e.g. APTOS 2019 Severe/Proliferative).
+    ``class_col``. Perfect balance is a target, not a guarantee: filler pass
+    tops up from remaining classes to reach ``max_targets`` total when a rare
+    class is short of its quota (e.g. APTOS 2019 Severe/Proliferative).
     """
-    target = df[df["confidence"] >= high_conf_threshold].copy()
-    if len(target) == 0:
-        target = df.sort_values("confidence", ascending=False).head(min(32, len(df))).copy()
+    target = df.copy()
 
     if not balance_by_class or len(target) == 0:
         if max_targets is not None and int(max_targets) > 0:
@@ -501,33 +547,12 @@ def _choose_xai_targets(
     return selected.reset_index(drop=True)
 
 
-def _parse_gradcam_layers(raw_layers: Any, default_layer: str = "layer4") -> list[str]:
-    allowed = {"layer2", "layer3", "layer4"}
-    values: list[str] = []
-    if isinstance(raw_layers, (list, tuple)):
-        for v in raw_layers:
-            key = str(v).strip().lower()
-            if key in allowed and key not in values:
-                values.append(key)
-    elif isinstance(raw_layers, str):
-        key = raw_layers.strip().lower()
-        if key in allowed:
-            values.append(key)
-    default_key = str(default_layer).strip().lower()
-    if default_key in allowed and default_key not in values:
-        values.insert(0, default_key)
-    if not values:
-        values = [default_key if default_key in allowed else "layer4"]
-    return values
-
-
 def run_xai_analysis(
     cfg: str | Path | dict[str, Any],
     seed: int = 1988,
     split: str = "test",
     checkpoint: str | Path | None = None,
     predictions_csv: str | Path | None = None,
-    shap_mode: str | None = None,
     shap_max_samples: int | None = None,
 ) -> dict[str, str]:
     gc.collect()
@@ -560,13 +585,11 @@ def run_xai_analysis(
     pred_path = Path(predictions_csv) if predictions_csv else Path(run_split_inference(conf, seed=seed, split=split))
 
     pred_df = pd.read_csv(pred_path)
-    high_conf_thr = float(conf.get("evaluation", {}).get("high_conf_threshold", 0.0))
     balance_targets = bool(xai_cfg.get("balance_targets_by_class", True))
     fill_missing_class = bool(xai_cfg.get("balance_fill_from_all", True))
     target_class_col = str(xai_cfg.get("target_balance_class_col", "true_class"))
     target_df = _choose_xai_targets(
         pred_df,
-        high_conf_threshold=high_conf_thr,
         max_targets=max_targets,
         num_classes=int(conf["data"]["num_classes"]),
         class_col=target_class_col,
@@ -574,13 +597,10 @@ def run_xai_analysis(
         fill_missing_from_all=fill_missing_class,
     )
 
-    use_mode = str(shap_mode if shap_mode is not None else xai_cfg.get("shap_mode", "subset")).strip().lower()
-    if use_mode not in {"subset", "full"}:
-        raise ValueError(f"Unsupported shap_mode={use_mode}")
     max_samples = int(shap_max_samples if shap_max_samples is not None else xai_cfg.get("shap_max_samples", 128))
     enforce_consistent_targets = bool(xai_cfg.get("enforce_consistent_targets", True))
     xai_target_df = target_df.copy()
-    if enforce_consistent_targets and use_mode == "subset" and max_samples > 0:
+    if enforce_consistent_targets and max_samples > 0:
         xai_target_df = xai_target_df.head(max_samples).copy()
     xai_target_df = xai_target_df.reset_index(drop=True)
 
@@ -591,17 +611,14 @@ def run_xai_analysis(
     xai_targets_path = _xai_csv("xai_targets")
     xai_target_df.to_csv(xai_targets_path, index=False)
 
-    if high_conf_thr > 0.0:
-        evaluation_scope = f"high_confidence_subset(confidence>={high_conf_thr:.2f})"
-    else:
-        evaluation_scope = "all_confidence"
+    evaluation_scope = "all_confidence"
     if max_targets is not None and max_targets > 0:
         evaluation_scope = f"{evaluation_scope}; max_targets={int(max_targets)}"
 
     print(
         f"[XAI] run_id={run_id} split={split} device={device} "
         f"targets={len(xai_target_df)} backbone={backbone} "
-        f"shared_targets={enforce_consistent_targets} shap_mode={use_mode} "
+        f"shared_targets={enforce_consistent_targets} "
         f"pass_rule=(border<={pass_border_ratio_max:.2f}, faith_k20>{pass_faith_delta_min:.2f})"
     )
 
@@ -614,31 +631,12 @@ def run_xai_analysis(
         _stale.unlink()
     gradcam_status_path = _gradcam_status_log_path(conf, run_id, split)
     gradcam_status_note = ""
-    layer_summary_path: Path | None = None
 
-    default_gradcam_layer = str(conf["xai"].get("gradcam_layer", "layer4"))
-    gradcam_layers_eval = _parse_gradcam_layers(
-        raw_layers=conf["xai"].get("gradcam_layers_eval", [default_gradcam_layer]),
-        default_layer=default_gradcam_layer,
-    )
-    layer_rows: dict[str, list[dict[str, Any]]] = {layer: [] for layer in gradcam_layers_eval}
-    unsupported_layers: dict[str, str] = {}
-    supported_layers: list[str] = []
-    layer_errors: dict[str, str] = {}
+    gradcam_layer = str(conf["xai"].get("gradcam_layer", "layer4")).strip().lower()
+    _, _, layer_reason = _resolve_gradcam_target_layer(model=model, layer_name=gradcam_layer)
+    gradcam_errors: dict[str, str] = {}
 
-    for layer_name in gradcam_layers_eval:
-        _, _, reason = _resolve_gradcam_target_layer(
-            model=model,
-            layer_name=layer_name,
-            backbone_hint=backbone,
-        )
-        if reason:
-            unsupported_layers[layer_name] = reason
-        else:
-            supported_layers.append(layer_name)
-
-    if not supported_layers:
-        reason = "; ".join(sorted(set(unsupported_layers.values()))) or "No Grad-CAM compatible feature layer was found."
+    if layer_reason:
         _save_json(
             gradcam_status_path,
             {
@@ -647,19 +645,18 @@ def run_xai_analysis(
                 "run_id": run_id,
                 "split": split,
                 "backbone": backbone,
-                "requested_layers": gradcam_layers_eval,
-                "supported_layers": [],
-                "unsupported_layers": unsupported_layers,
-                "reason": reason,
+                "gradcam_layer": gradcam_layer,
+                "reason": layer_reason,
                 "shared_targets_enforced": bool(enforce_consistent_targets),
                 "target_rows": int(len(xai_target_df)),
             },
         )
-        gradcam_status_note = f"skipped: {reason}"
+        gradcam_status_note = f"skipped: {layer_reason}"
     else:
-        total_grad_jobs = int(len(xai_target_df) * len(supported_layers))
+        total_grad_jobs = int(len(xai_target_df))
         grad_job_idx = 0
         for _, row in xai_target_df.iterrows():
+            grad_job_idx += 1
             image_pil, image_tensor = _load_image_for_inference(
                 row["image_path"],
                 image_size=image_size,
@@ -667,84 +664,21 @@ def run_xai_analysis(
             )
             image_tensor = image_tensor.to(device)
             target_class_value = int(row[target_class_col]) if target_class_col in row.index else int(row["pred_class"])
-
-            for layer_name in supported_layers:
-                grad_job_idx += 1
-                out_path = grad_dir / f"{row['sample_id']}_cls{int(row['pred_class'])}_{layer_name}.png"
-                try:
-                    artifact, heat_input, heat_raw = _generate_gradcam(
-                        model=model,
-                        input_tensor=image_tensor,
-                        original_image=np.array(image_pil),
-                        class_id=int(row["pred_class"]),
-                        layer_name=layer_name,
-                        output_path=out_path,
-                        device=device,
-                        conf=conf,
-                        overlay_dpi=fig_dpi,
-                        backbone_hint=backbone,
-                    )
-                except Exception as exc:
-                    layer_errors[layer_name] = str(exc)
-                    if xai_log_every_samples > 0 and (
-                        grad_job_idx == 1
-                        or grad_job_idx % xai_log_every_samples == 0
-                        or grad_job_idx == total_grad_jobs
-                    ):
-                        elapsed_m = (time.time() - xai_start_time) / 60.0
-                        print(
-                            f"[XAI][GradCAM] job={grad_job_idx}/{total_grad_jobs} "
-                            f"layer={layer_name} status=error elapsed={elapsed_m:.1f}m"
-                        )
-                    continue
-
-                ratios = _attribution_mass_ratios(heat_input)
-                raw_ratios = _attribution_mass_ratios(heat_raw)
-                faith_by_k, aopc_delta = _faithfulness_multi_k(
+            out_path = grad_dir / f"{row['sample_id']}_cls{int(row['pred_class'])}_{gradcam_layer}.png"
+            try:
+                artifact, heat_input, heat_raw = _generate_gradcam(
                     model=model,
-                    image_tensor=image_tensor,
-                    score_map=heat_input,
-                    pred_class=int(row["pred_class"]),
-                    k_list=k_list,
-                    random_seed=bootstrap_seed,
+                    input_tensor=image_tensor,
+                    original_image=np.array(image_pil),
+                    class_id=int(row["pred_class"]),
+                    layer_name=gradcam_layer,
+                    output_path=out_path,
+                    device=device,
+                    conf=conf,
+                    overlay_dpi=fig_dpi,
                 )
-                faith_legacy = float(faith_by_k.get("faith_delta_k20", np.nan))
-                if np.isnan(faith_legacy):
-                    faith_legacy = _faithfulness_delta(
-                        model=model,
-                        image_tensor=image_tensor,
-                        score_map=heat_input,
-                        pred_class=int(row["pred_class"]),
-                        top_k_ratio=0.20,
-                        random_seed=bootstrap_seed,
-                    )
-                pass_flag = _xai_pass_flag(
-                    border_ratio=float(ratios["border_ratio"]),
-                    faith_delta=float(faith_legacy),
-                    border_ratio_max=pass_border_ratio_max,
-                    faith_delta_min=pass_faith_delta_min,
-                )
-                aopc_pass = int(aopc_delta > 0.0) if not np.isnan(aopc_delta) else 0
-
-                layer_rows[layer_name].append(
-                    {
-                        "sample_id": row["sample_id"],
-                        "target_class": target_class_value,
-                        "pred_class": int(row["pred_class"]),
-                        "confidence": float(row["confidence"]),
-                        "gradcam_layer": layer_name,
-                        "artifact_path": artifact,
-                        "border_ratio": float(ratios["border_ratio"]),
-                        "retina_ratio": float(ratios["retina_ratio"]),
-                        "border_ratio_raw": float(raw_ratios["border_ratio"]),
-                        "retina_ratio_raw": float(raw_ratios["retina_ratio"]),
-                        "faithfulness_delta": float(faith_legacy),
-                        "gradcam_pass": pass_flag,
-                        **faith_by_k,
-                        "aopc_delta": float(aopc_delta),
-                        "aopc_pass": int(aopc_pass),
-                    }
-                )
+            except Exception as exc:
+                gradcam_errors[str(row["sample_id"])] = str(exc)
                 if xai_log_every_samples > 0 and (
                     grad_job_idx == 1
                     or grad_job_idx % xai_log_every_samples == 0
@@ -753,46 +687,49 @@ def run_xai_analysis(
                     elapsed_m = (time.time() - xai_start_time) / 60.0
                     print(
                         f"[XAI][GradCAM] job={grad_job_idx}/{total_grad_jobs} "
-                        f"layer={layer_name} status=ok elapsed={elapsed_m:.1f}m"
+                        f"status=error elapsed={elapsed_m:.1f}m"
                     )
-
-        layer_scores: list[tuple[str, float, float, float, int]] = []
-        for layer_name in supported_layers:
-            rows = layer_rows.get(layer_name, [])
-            if len(rows) == 0:
-                layer_scores.append((layer_name, -np.inf, float("nan"), float("nan"), 0))
                 continue
-            layer_df = pd.DataFrame(rows)
-            aopc_mean = float(pd.to_numeric(layer_df["aopc_delta"], errors="coerce").mean())
-            border_mean = float(pd.to_numeric(layer_df["border_ratio"], errors="coerce").mean())
-            if np.isnan(aopc_mean) or np.isnan(border_mean):
-                score = -np.inf
-            else:
-                score = aopc_mean * (1.0 - float(np.clip(border_mean, 0.0, 1.0)))
-            layer_scores.append((layer_name, score, aopc_mean, border_mean, int(len(rows))))
 
-        selected_layer = default_gradcam_layer if default_gradcam_layer in supported_layers else supported_layers[0]
-        if layer_scores:
-            ranked_scores = sorted(layer_scores, key=lambda x: x[1], reverse=True)
-            selected_layer = ranked_scores[0][0]
-        grad_rows = layer_rows.get(selected_layer, [])
-
-        layer_summary_path = _xai_csv("gradcam_layer_selection")
-        pd.DataFrame(
-            layer_scores,
-            columns=["gradcam_layer", "composite_score", "mean_aopc_delta", "mean_border_ratio", "n_rows"],
-        ).to_csv(layer_summary_path, index=False)
+            metrics = _score_attribution(
+                model=model,
+                image_tensor=image_tensor,
+                score_map=heat_input,
+                raw_ratios=_attribution_mass_ratios(heat_raw),
+                pred_class=int(row["pred_class"]),
+                k_list=k_list,
+                bootstrap_seed=bootstrap_seed,
+                pass_border_ratio_max=pass_border_ratio_max,
+                pass_faith_delta_min=pass_faith_delta_min,
+            )
+            grad_rows.append({
+                "sample_id": row["sample_id"],
+                "target_class": target_class_value,
+                "pred_class": int(row["pred_class"]),
+                "confidence": float(row["confidence"]),
+                "gradcam_layer": gradcam_layer,
+                "artifact_path": artifact,
+                "gradcam_pass": metrics.pop("_pass_flag"),
+                **metrics,
+            })
+            if xai_log_every_samples > 0 and (
+                grad_job_idx == 1
+                or grad_job_idx % xai_log_every_samples == 0
+                or grad_job_idx == total_grad_jobs
+            ):
+                elapsed_m = (time.time() - xai_start_time) / 60.0
+                print(
+                    f"[XAI][GradCAM] job={grad_job_idx}/{total_grad_jobs} "
+                    f"status=ok elapsed={elapsed_m:.1f}m"
+                )
 
         gradcam_status_payload = {
             "seed": int(seed),
             "run_id": run_id,
             "split": split,
             "backbone": backbone,
-            "requested_layers": gradcam_layers_eval,
-            "supported_layers": supported_layers,
-            "unsupported_layers": unsupported_layers,
-            "errors": layer_errors,
-            "selected_layer": selected_layer,
+            "gradcam_layer": gradcam_layer,
+            "errors": gradcam_errors,
             "pass_rule_border_ratio_max": float(pass_border_ratio_max),
             "pass_rule_faith_delta_k20_min": float(pass_faith_delta_min),
             "evaluation_scope": evaluation_scope,
@@ -800,14 +737,14 @@ def run_xai_analysis(
             "target_rows": int(len(xai_target_df)),
         }
         if len(grad_rows) == 0:
-            reason = "No Grad-CAM rows were produced from supported layers."
-            if layer_errors:
-                reason = f"{reason} Errors: {layer_errors}"
+            reason = "No Grad-CAM rows were produced."
+            if gradcam_errors:
+                reason = f"{reason} Errors: {gradcam_errors}"
             gradcam_status_payload.update({"status": "failed", "reason": reason})
             _save_json(gradcam_status_path, gradcam_status_payload)
             gradcam_status_note = f"failed: {reason}"
         else:
-            status = "success" if len(layer_errors) == 0 and len(unsupported_layers) == 0 else "partial_success"
+            status = "success" if len(gradcam_errors) == 0 else "partial_success"
             gradcam_status_payload.update({"status": status, "rows": int(len(grad_rows))})
             _save_json(gradcam_status_path, gradcam_status_payload)
             gradcam_status_note = status
@@ -852,10 +789,10 @@ def run_xai_analysis(
         shap_score_mode = str(xai_cfg.get("shap_score_mode", "positive")).strip().lower()
         if enforce_consistent_targets:
             shap_target = xai_target_df.copy()
-        elif use_mode == "full":
-            shap_target = target_df.copy()
-        else:
+        elif max_samples > 0:
             shap_target = target_df.head(max_samples).copy()
+        else:
+            shap_target = target_df.copy()
 
         if len(shap_target) == 0:
             raise RuntimeError("No target samples selected for SHAP")
@@ -897,52 +834,27 @@ def run_xai_analysis(
                 out_path = shap_dir / f"{row['sample_id']}_cls{int(row['pred_class'])}.png"
                 artifact = _save_map_overlay(s2d, np.array(base_image), out_path, overlay_dpi=fig_dpi)
 
-                ratios = _attribution_mass_ratios(s2d)
-                faith_by_k, aopc_delta = _faithfulness_multi_k(
+                metrics = _score_attribution(
                     model=shap_model,
                     image_tensor=t,
                     score_map=s2d,
+                    raw_ratios=raw_ratios,
                     pred_class=int(row["pred_class"]),
                     k_list=k_list,
-                    random_seed=bootstrap_seed,
+                    bootstrap_seed=bootstrap_seed,
+                    pass_border_ratio_max=pass_border_ratio_max,
+                    pass_faith_delta_min=pass_faith_delta_min,
                 )
-                faith_legacy = float(faith_by_k.get("faith_delta_k20", np.nan))
-                if np.isnan(faith_legacy):
-                    faith_legacy = _faithfulness_delta(
-                        model=shap_model,
-                        image_tensor=t,
-                        score_map=s2d,
-                        pred_class=int(row["pred_class"]),
-                        top_k_ratio=0.20,
-                        random_seed=bootstrap_seed,
-                    )
-                pass_flag = _xai_pass_flag(
-                    border_ratio=float(ratios["border_ratio"]),
-                    faith_delta=float(faith_legacy),
-                    border_ratio_max=pass_border_ratio_max,
-                    faith_delta_min=pass_faith_delta_min,
-                )
-                aopc_pass = int(aopc_delta > 0.0) if not np.isnan(aopc_delta) else 0
-
-                rows.append(
-                    {
-                        "sample_id": row["sample_id"],
-                        "target_class": target_class_value,
-                        "pred_class": int(row["pred_class"]),
-                        "confidence": float(row["confidence"]),
-                        "shap_score_mode": shap_score_mode,
-                        "artifact_path": artifact,
-                        "border_ratio": float(ratios["border_ratio"]),
-                        "retina_ratio": float(ratios["retina_ratio"]),
-                        "border_ratio_raw": float(raw_ratios["border_ratio"]),
-                        "retina_ratio_raw": float(raw_ratios["retina_ratio"]),
-                        "faithfulness_delta": float(faith_legacy),
-                        "shap_pass": pass_flag,
-                        **faith_by_k,
-                        "aopc_delta": float(aopc_delta),
-                        "aopc_pass": int(aopc_pass),
-                    }
-                )
+                rows.append({
+                    "sample_id": row["sample_id"],
+                    "target_class": target_class_value,
+                    "pred_class": int(row["pred_class"]),
+                    "confidence": float(row["confidence"]),
+                    "shap_score_mode": shap_score_mode,
+                    "artifact_path": artifact,
+                    "shap_pass": metrics.pop("_pass_flag"),
+                    **metrics,
+                })
                 del shap_values, smap, s2d, t, base_image
                 if getattr(shap_device, "type", "") == "mps":
                     _empty_mps_cache_if_available()
@@ -983,7 +895,6 @@ def run_xai_analysis(
         "seed": int(seed),
         "run_id": run_id,
         "split": split,
-        "mode": str(shap_mode) if shap_error else use_mode,
         "attempted_device": shap_attempted_device,
         "final_device": shap_final_device,
         "fallback_used": bool(shap_fallback_used),
@@ -1135,7 +1046,6 @@ def run_xai_analysis(
         "run_id": run_id,
         "rq1_table": str(rq1_path),
         "rq2_table": str(rq2_path),
-        "gradcam_layer_selection_table": str(layer_summary_path) if layer_summary_path is not None else "",
         "gradcam_status": str(gradcam_status_path),
         "rq_method_stats_table": str(method_stats_path),
         "rq_pass_by_correctness_table": str(pass_by_correctness_path),
@@ -1183,7 +1093,6 @@ def notebook_run_xai(
         split=split_key,
         checkpoint=checkpoint,
         predictions_csv=None,
-        shap_mode=str(xai_cfg.get("shap_mode", "subset")),
         shap_max_samples=int(xai_cfg.get("shap_max_samples", 64)),
     )
 
@@ -1229,19 +1138,12 @@ def notebook_load_xai_committee_summary(
     split_key = str(split).strip().lower() or "test"
     tables_dir = Path(conf["paths"]["tables_dir"])
 
-    method_path = tables_dir / f"rq_xai_method_stats_seed{int(seed)}_{split_key}.csv"
-    pairwise_path = tables_dir / f"rq_xai_pairwise_seed{int(seed)}_{split_key}.csv"
-    continuous_path = tables_dir / f"rq_xai_continuous_seed{int(seed)}_{split_key}.csv"
-    coverage_path = tables_dir / f"xai_target_coverage_seed{int(seed)}_{split_key}.csv"
-    targets_path = tables_dir / f"xai_targets_seed{int(seed)}_{split_key}.csv"
-    correctness_path = tables_dir / f"rq_xai_pass_by_correctness_seed{int(seed)}_{split_key}.csv"
-
-    method_stats_df = pd.read_csv(method_path) if method_path.exists() else pd.DataFrame()
-    pairwise_df = pd.read_csv(pairwise_path) if pairwise_path.exists() else pd.DataFrame()
-    continuous_df = pd.read_csv(continuous_path) if continuous_path.exists() else pd.DataFrame()
-    coverage_df = pd.read_csv(coverage_path) if coverage_path.exists() else pd.DataFrame()
-    targets_df = pd.read_csv(targets_path) if targets_path.exists() else pd.DataFrame()
-    correctness_df = pd.read_csv(correctness_path) if correctness_path.exists() else pd.DataFrame()
+    _csv = lambda stem: tables_dir / f"{stem}_seed{int(seed)}_{split_key}.csv"
+    _read = lambda p: pd.read_csv(p) if p.exists() else pd.DataFrame()
+    method_path, pairwise_path, continuous_path = _csv("rq_xai_method_stats"), _csv("rq_xai_pairwise"), _csv("rq_xai_continuous")
+    coverage_path, targets_path, correctness_path = _csv("xai_target_coverage"), _csv("xai_targets"), _csv("rq_xai_pass_by_correctness")
+    method_stats_df, pairwise_df, continuous_df = _read(method_path), _read(pairwise_path), _read(continuous_path)
+    coverage_df, targets_df, correctness_df = _read(coverage_path), _read(targets_path), _read(correctness_path)
 
     if method_stats_df.empty:
         raise RuntimeError(f"Missing or empty method stats table: {method_path}")
@@ -1488,8 +1390,7 @@ def notebook_load_xai_advanced_audit(
                 "method": "gradcam",
                 "status": grad_status_payload.get("status", "unknown"),
                 "reason_or_error": grad_status_payload.get("reason", ""),
-                "supported_layers": ", ".join(grad_status_payload.get("supported_layers", []) or []),
-                "requested_layers": ", ".join(grad_status_payload.get("requested_layers", []) or []),
+                "gradcam_layer": grad_status_payload.get("gradcam_layer", ""),
                 "target_rows": grad_status_payload.get("target_rows", ""),
             },
             {

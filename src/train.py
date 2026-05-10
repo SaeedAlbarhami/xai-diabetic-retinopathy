@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import shutil
 import time
 from datetime import datetime
@@ -31,7 +30,6 @@ from src.data import (
     _cfg,
     _save_json,
     _load_json,
-    _write_alias_copy,
     _set_seed,
     _resolve_device,
     prepare_data_manifests,
@@ -39,7 +37,7 @@ from src.data import (
     _manifest_path,
     _backbone_name,
     _model_image_size,
-    _split_policy_tag,
+    _profile_tag,
     _table_path,
 )
 
@@ -50,11 +48,8 @@ class DRClassifier(nn.Module):
         num_classes: int = 5,
         use_pretrained: bool = True,
         dropout: float = 0.0,
-        backbone: str = "efficientnet_b4",
     ) -> None:
         super().__init__()
-        if str(backbone).strip().lower() != "efficientnet_b4":
-            raise ValueError(f"Unsupported backbone: {backbone}. Only efficientnet_b4 is supported.")
         p_drop = float(np.clip(dropout, 0.0, 0.9))
         weights = EfficientNet_B4_Weights.IMAGENET1K_V1 if use_pretrained else None
         self.net = efficientnet_b4(weights=weights)
@@ -66,19 +61,6 @@ class DRClassifier(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.net(x)
-
-
-class _LogitWrapper(nn.Module):
-    def __init__(self, model: nn.Module) -> None:
-        super().__init__()
-        self.model = model
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        logits = self.model(x)
-        # Keep backward hooks safe for attribution libraries that fail on view/in-place interactions.
-        if isinstance(logits, torch.Tensor):
-            return logits.clone()
-        return logits
 
 
 def _classification_metrics(df: pd.DataFrame, num_classes: int) -> tuple[dict[str, float], pd.DataFrame]:
@@ -234,33 +216,18 @@ def _latest_run_record_path(conf: dict[str, Any], seed: int) -> Path:
 
 def _new_run_id(conf: dict[str, Any], seed: int) -> str:
     backbone = _backbone_name(conf)
-    split_policy = _split_policy_tag(conf)
+    profile_tag = _profile_tag(conf)
     timestamp_visible = datetime.now().strftime("%Y%m%dT%H%M")
     timestamp_entropy = datetime.now().strftime("%Y%m%dT%H%M%S%f")
-    signature_payload = {
-        "seed": int(seed),
-        "backbone": backbone,
-        "split_policy": split_policy,
-        "config_signature": _checkpoint_config_signature(conf),
-    }
-    signature_text = json.dumps(signature_payload, sort_keys=True)
-    short_hash = hashlib.sha1(f"{signature_text}|{timestamp_entropy}".encode("utf-8")).hexdigest()[:6]
-    return f"dr_{backbone}_{split_policy}_seed{seed}_{timestamp_visible}_{short_hash}"
+    short_hash = hashlib.sha1(f"{seed}|{backbone}|{profile_tag}|{timestamp_entropy}".encode("utf-8")).hexdigest()[:6]
+    return f"dr_{backbone}_{profile_tag}_seed{seed}_{timestamp_visible}_{short_hash}"
 
 
-def _run_id_from_checkpoint_path(conf: dict[str, Any], seed: int, checkpoint_path: str | Path) -> str:
-    ckpt = Path(checkpoint_path)
-    stem = ckpt.stem
-    if stem.startswith("dr_"):
-        return stem
-    backbone = _backbone_name(conf)
-    split_policy = _split_policy_tag(conf)
-    if ckpt.exists():
-        ts = datetime.fromtimestamp(ckpt.stat().st_mtime).strftime("%Y%m%dT%H%M")
-    else:
-        ts = datetime.now().strftime("%Y%m%dT%H%M")
-    short_hash = hashlib.sha1(f"{stem}|{seed}|{backbone}|{split_policy}".encode("utf-8")).hexdigest()[:6]
-    return f"dr_{backbone}_{split_policy}_seed{seed}_{ts}_{short_hash}"
+def _run_id_from_checkpoint_path(checkpoint_path: str | Path) -> str:
+    stem = Path(checkpoint_path).stem
+    if not stem.startswith("dr_"):
+        raise ValueError(f"Checkpoint filename must start with 'dr_': {checkpoint_path}")
+    return stem
 
 
 def _checkpoint_path_for_run_id(conf: dict[str, Any], run_id: str) -> Path:
@@ -298,7 +265,7 @@ def _save_latest_run_record(
         "seed": int(seed),
         "run_id": run_id,
         "backbone": _backbone_name(conf),
-        "split_policy": _split_policy_tag(conf),
+        "profile_tag": _profile_tag(conf),
         "checkpoint_path": str(Path(checkpoint_path).resolve()),
         "updated_at": datetime.now().isoformat(timespec="seconds"),
     }
@@ -342,7 +309,7 @@ def _load_latest_run_record(conf: dict[str, Any], seed: int) -> dict[str, Any] |
 
 def _latest_named_checkpoint(conf: dict[str, Any], seed: int) -> Path | None:
     ckpt_dir = Path(conf["paths"]["checkpoints_dir"])
-    pattern = f"dr_{_backbone_name(conf)}_{_split_policy_tag(conf)}_seed{seed}_*.pt"
+    pattern = f"dr_{_backbone_name(conf)}_{_profile_tag(conf)}_seed{seed}_*.pt"
     matches = [p for p in ckpt_dir.glob(pattern) if p.is_file()]
     if not matches:
         return None
@@ -360,7 +327,7 @@ def _resolve_checkpoint_and_run_id(
         ckpt = Path(checkpoint).expanduser().resolve()
         if require_existing and not ckpt.exists():
             raise FileNotFoundError(f"Checkpoint not found: {ckpt}")
-        run_id = _run_id_from_checkpoint_path(conf, seed, ckpt)
+        run_id = _run_id_from_checkpoint_path(ckpt)
         _save_latest_run_record(conf, seed, run_id, ckpt)
         return ckpt, run_id
 
@@ -369,16 +336,11 @@ def _resolve_checkpoint_and_run_id(
         ckpt = Path(str(record["checkpoint_path"]))
         run_id = str(record["run_id"])
         if ckpt.exists():
-            if not ckpt.stem.startswith("dr_"):
-                migrated_ckpt = _checkpoint_path_for_run_id(conf, run_id)
-                _write_alias_copy(ckpt, migrated_ckpt)
-                _save_latest_run_record(conf, seed, run_id, migrated_ckpt)
-                return migrated_ckpt, run_id
             return ckpt, run_id
 
     ckpt = _latest_named_checkpoint(conf, seed)
     if ckpt is not None:
-        run_id = _run_id_from_checkpoint_path(conf, seed, ckpt)
+        run_id = _run_id_from_checkpoint_path(ckpt)
         _save_latest_run_record(conf, seed, run_id, ckpt)
         return ckpt, run_id
 
@@ -389,99 +351,6 @@ def _resolve_checkpoint_and_run_id(
 
     run_id = _new_run_id(conf, seed)
     return _checkpoint_path_for_run_id(conf, run_id), run_id
-
-
-def _signature_subset_match(saved: Any, query: Any) -> bool:
-    """Return True if every key/value in query is present in saved with matching value.
-    Compares dicts recursively so a slimmer current signature still matches an older,
-    fuller saved signature provided every key in current is in saved with the same value.
-    """
-    if isinstance(query, dict):
-        if not isinstance(saved, dict):
-            return False
-        return all(k in saved and _signature_subset_match(saved[k], v) for k, v in query.items())
-    return saved == query
-
-
-def _find_matching_checkpoint_by_signature(
-    conf: dict[str, Any],
-    seed: int,
-    config_signature: dict[str, Any],
-) -> tuple[Path, str] | None:
-    candidates: list[Path] = []
-    latest_named = _latest_named_checkpoint(conf, seed)
-    if latest_named is not None:
-        ckpt_dir = Path(conf["paths"]["checkpoints_dir"])
-        pattern = f"dr_{_backbone_name(conf)}_{_split_policy_tag(conf)}_seed{seed}_*.pt"
-        named = [p for p in ckpt_dir.glob(pattern) if p.is_file()]
-        named.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-        candidates.extend(named)
-
-    seen: set[str] = set()
-    for ckpt in candidates:
-        resolved = str(ckpt.resolve())
-        if resolved in seen:
-            continue
-        seen.add(resolved)
-        try:
-            payload = torch.load(ckpt, map_location="cpu")
-            saved_sig = payload.get("config_signature")
-        except Exception:
-            continue
-        if _signature_subset_match(saved_sig, config_signature):
-            run_id = _run_id_from_checkpoint_path(conf, seed, ckpt)
-            return ckpt, run_id
-    return None
-
-
-def _run_id_from_predictions_path(predictions_path: str | Path, split: str) -> str:
-    stem = Path(predictions_path).stem
-    suffix = f"_{split}_predictions"
-    if stem.startswith("dr_") and stem.endswith(suffix):
-        return stem[: -len(suffix)]
-    return ""
-
-
-_USED_AUG_KEYS = (
-    "profile_horizontal_flip",
-    "profile_vertical_flip",
-    "profile_rotation_degrees",
-    "profile_translate",
-    "profile_scale_min",
-    "profile_scale_max",
-    "profile_shear_degrees",
-    "profile_brightness",
-    "profile_contrast",
-)
-
-
-def _checkpoint_config_signature(conf: dict[str, Any]) -> dict[str, Any]:
-    aug = conf.get("augmentation", {})
-    return {
-        "data_protocol": "benchmark",
-        "data_source": str(conf.get("data", {}).get("source", "aptos_only")),
-        "profile_test_ratio": float(conf.get("data", {}).get("profile_test_ratio", 0.15)),
-        "profile_val_ratio_within_train": float(conf.get("data", {}).get("profile_val_ratio_within_train", 0.10)),
-        "backbone": _backbone_name(conf),
-        "image_size": int(conf["data"]["image_size"]),
-        "effective_image_size": _model_image_size(conf),
-        "num_classes": int(conf["data"]["num_classes"]),
-        "use_pretrained": bool(conf["training"].get("use_pretrained", True)),
-        "dropout": float(conf["training"].get("dropout", 0.0)),
-        "label_smoothing": float(conf["training"].get("label_smoothing", 0.0)),
-        "optimizer_name": str(conf["training"].get("optimizer_name", "adamw")),
-        "lr": float(conf["training"]["lr"]),
-        "weight_decay": float(conf["training"]["weight_decay"]),
-        "use_class_weights": bool(conf["training"].get("use_class_weights", True)),
-        "loss_name": str(conf["training"].get("loss_name", "focal")),
-        "focal_gamma": float(conf["training"].get("focal_gamma", 2.0)),
-        "grad_accum_steps": int(conf["training"].get("grad_accum_steps", 1)),
-        "scheduler_name": str(conf["training"].get("scheduler_name", "cosine_annealing")),
-        "use_scheduler": bool(conf["training"].get("use_scheduler", True)),
-        "scheduler_min_lr": float(conf["training"].get("scheduler_min_lr", 1e-8)),
-        "augmentation": {k: aug[k] for k in _USED_AUG_KEYS if k in aug},
-        "preprocessing": dict(conf.get("preprocessing", {})),
-    }
 
 
 def _class_weights(class_ids: list[int], num_classes: int, device: torch.device) -> torch.Tensor:
@@ -656,7 +525,6 @@ def _load_model(
         num_classes=int(conf["data"]["num_classes"]),
         use_pretrained=False,
         dropout=float(conf["training"].get("dropout", 0.0)),
-        backbone=_backbone_name(conf),
     ).to(device)
 
     payload = torch.load(ckpt, map_location=device)
@@ -683,22 +551,17 @@ def train_dr_classifier(
 ) -> str:
     conf = _cfg(cfg)
     _set_seed(int(seed))
-    current_sig = _checkpoint_config_signature(conf)
 
     if reuse_if_exists:
-        matched = _find_matching_checkpoint_by_signature(conf, seed=seed, config_signature=current_sig)
-        if matched is not None:
-            existing_ckpt, existing_run_id = matched
-            if not existing_ckpt.stem.startswith("dr_"):
-                migrated_ckpt = _checkpoint_path_for_run_id(conf, existing_run_id)
-                _write_alias_copy(existing_ckpt, migrated_ckpt)
-                existing_ckpt = migrated_ckpt
-            _save_latest_run_record(conf, seed=seed, run_id=existing_run_id, checkpoint_path=existing_ckpt)
+        try:
+            existing_ckpt, _ = _resolve_checkpoint_and_run_id(
+                conf, seed=int(seed), checkpoint=None, require_existing=True,
+            )
             print(f"Reusing existing checkpoint: {existing_ckpt}")
             return str(existing_ckpt)
+        except FileNotFoundError:
+            pass
 
-    # No exact signature match: always start a fresh run ID/path to avoid
-    # overwriting a previous checkpoint from a different config signature.
     run_id = _new_run_id(conf, seed=seed)
     ckpt = _checkpoint_path_for_run_id(conf, run_id)
     train_started_at = datetime.now().isoformat(timespec="seconds")
@@ -769,7 +632,6 @@ def train_dr_classifier(
         num_classes=int(conf["data"]["num_classes"]),
         use_pretrained=bool(conf["training"].get("use_pretrained", True)),
         dropout=float(conf["training"].get("dropout", 0.0)),
-        backbone=_backbone_name(conf),
     ).to(device)
 
     base_lr = float(conf["training"]["lr"])
@@ -931,7 +793,6 @@ def train_dr_classifier(
                     "seed": int(seed),
                     "run_id": run_id,
                     "best_val_macro_f1": float(best_f1),
-                    "config_signature": _checkpoint_config_signature(conf),
                 },
                 ckpt,
             )
@@ -1140,8 +1001,9 @@ def evaluate_pipeline_outputs(cfg: str | Path | dict[str, Any], seed: int = 1988
 
     df = pd.read_csv(pred_path)
     num_classes = int(conf["data"]["num_classes"])
-    high_conf_thr = float(conf.get("evaluation", {}).get("high_conf_threshold", 0.0))
-    run_id = _run_id_from_predictions_path(pred_path, split=split)
+    pred_stem = Path(pred_path).stem
+    pred_suffix = f"_{split}_predictions"
+    run_id = pred_stem[: -len(pred_suffix)] if pred_stem.startswith("dr_") and pred_stem.endswith(pred_suffix) else ""
     if not run_id:
         try:
             _, run_id = _resolve_checkpoint_and_run_id(conf, seed=seed, checkpoint=None, require_existing=True)
@@ -1149,12 +1011,7 @@ def evaluate_pipeline_outputs(cfg: str | Path | dict[str, Any], seed: int = 1988
             run_id = ""
 
     m_all, cm_all = _classification_metrics(df, num_classes=num_classes)
-    m_high, _ = _classification_metrics(df[df["confidence"] >= high_conf_thr], num_classes=num_classes)
-
-    metrics_rows = [
-        {"run_id": run_id, "scope": "all", **m_all},
-        {"run_id": run_id, "scope": "high_conf", **m_high},
-    ]
+    metrics_rows = [{"run_id": run_id, "scope": "all", **m_all}]
 
     metrics_path = _table_path(conf, "metrics", seed=seed, split=split)
     pd.DataFrame(metrics_rows).to_csv(metrics_path, index=False)
@@ -1179,13 +1036,6 @@ def evaluate_pipeline_outputs(cfg: str | Path | dict[str, Any], seed: int = 1988
         "sensitivity_macro_all": float(m_all.get("sensitivity_macro", np.nan)),
         "specificity_macro_all": float(m_all.get("specificity_macro", np.nan)),
         "f1_macro_all": float(m_all.get("f1_macro", np.nan)),
-        "n_high_conf": int(m_high.get("n", 0.0)),
-        "accuracy_high_conf": float(m_high.get("accuracy", np.nan)),
-        "qwk_high_conf": float(m_high.get("qwk", np.nan)),
-        "recall_macro_high_conf": float(m_high.get("recall_macro", np.nan)),
-        "sensitivity_macro_high_conf": float(m_high.get("sensitivity_macro", np.nan)),
-        "specificity_macro_high_conf": float(m_high.get("specificity_macro", np.nan)),
-        "f1_macro_high_conf": float(m_high.get("f1_macro", np.nan)),
     }
     run_summary_path = _table_path(conf, "run_summary", seed=seed, split=split)
     pd.DataFrame([run_summary]).to_csv(run_summary_path, index=False)
@@ -1237,9 +1087,8 @@ def notebook_run_training(
 ) -> dict[str, Any]:
     conf = _cfg(cfg_or_path)
     reuse_if_exists = not bool(force_retrain)
-    current_sig = _checkpoint_config_signature(conf)
-    pre_match = _find_matching_checkpoint_by_signature(conf, seed=int(seed), config_signature=current_sig) if reuse_if_exists else None
-    had_any_checkpoint = _latest_named_checkpoint(conf, int(seed)) is not None
+    pre_record = _load_latest_run_record(conf, int(seed))
+    pre_ckpt = Path(str(pre_record["checkpoint_path"])) if pre_record else None
 
     checkpoint_path = train_dr_classifier(
         conf,
@@ -1276,15 +1125,18 @@ def notebook_run_training(
         axes[1].set_ylabel("Macro-F1")
         history_fig.tight_layout()
 
-    reused_checkpoint = bool(pre_match is not None and Path(pre_match[0]).resolve() == Path(checkpoint_path).resolve())
+    reused_checkpoint = bool(
+        reuse_if_exists
+        and pre_ckpt is not None
+        and pre_ckpt.exists()
+        and pre_ckpt.resolve() == Path(checkpoint_path).resolve()
+    )
     if force_retrain:
         reuse_reason = "force_retrain"
     elif reused_checkpoint:
-        reuse_reason = "matched_signature"
-    elif had_any_checkpoint:
-        reuse_reason = "signature_mismatch"
+        reuse_reason = "reused_existing"
     else:
-        reuse_reason = "no_checkpoint_found"
+        reuse_reason = "trained_new"
 
     return {
         "cfg": conf,

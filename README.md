@@ -2,7 +2,7 @@ This repository contains an end-to-end pipeline for five-class diabetic retinopa
 
 - Primary entry point: [notebooks/project_demo.ipynb](notebooks/project_demo.ipynb)
 - Configuration source of truth: [configs/base.yaml](configs/base.yaml)
-- Final Report PDF: [src/report/ITPG_708_FinalReport.pdf](src/report/ITPG_708_FinalReport.pdf)
+- Final Report (LaTeX): [src/report/XAI_Final-ProjectReport.tex](src/report/XAI_Final-ProjectReport.tex)
 - Repository: `https://github.com/SaeedAlbarhami/xai-diabetic-retinopathy.git`
 ---
 
@@ -23,6 +23,10 @@ The current committed configuration uses:
 - AdamW with `lr=7e-5`, `weight_decay=1e-4`, `epochs=15`, `batch_size=32`
 - post-hoc temperature scaling on the validation split
 - XAI audit settings `max_targets=120`, `shap_max_samples=120`, `shap_background_size=16`, `attribution_mask_radius_ratio=0.50`
+
+### XAI methodology in one paragraph
+
+For every audited image, both Grad-CAM and SHAP DeepExplainer attributions are multiplied by the same circular retinal-disc mask `M` (radius ratio `0.50`) before any metric is computed; this is the **attribution-mask artifact correction** that keeps the comparison symmetric between the two methods. The audit runs on a `120`-image subset, picked to be class-balanced where possible: the selector aims for `max_targets / num_classes` per ICDR grade and backfills from remaining classes when a rare grade is short of its quota. Each masked attribution map is scored on four continuous metrics: **border ratio (BR)** — fraction of attribution mass in the peripheral 10% band; **retina ratio (RR)** — share of mass inside the disc; **faithfulness Δ_k** — drop in `p(ŷ)` after masking the top-`k%` most-attributed pixels minus the drop after a matched-size random `k%` mask, reported at `k ∈ {10, 20, 30}`; and **AOPC** — the mean of `Δ_k` across the three k-values. Methods are compared with paired **Wilcoxon signed-rank tests** + **Cohen's d_z** as the primary continuous analysis, with **1000-iteration bootstrap** confidence intervals. A descriptive secondary analysis reports a thresholded pass rate (border ratio `≤ 0.25` AND `Δ_{k=20} > 0.10`) compared with **McNemar's exact test** on paired binary outcomes.
 
 ---
 
@@ -159,13 +163,13 @@ The notebook is organized into Sections 1 through 9. The key behavior is:
 | 2. Dataset and Preprocessing Pipeline | Builds or refreshes manifests and dataset/preprocessing overview tables/figures | `artifacts/manifests/` and report figures |
 | 3. Classification Model Training | Reuses a compatible checkpoint or trains a new one | `artifacts/checkpoints/` |
 | 4. Classification Model Evaluation | Runs inference and evaluation on `EVAL_SPLIT` | `artifacts/predictions/`, metrics tables, confusion matrix, calibration outputs |
-| 5. XAI Methodology | Runs the paired Grad-CAM / SHAP audit and applies mask-aware attribution correction | XAI CSVs and overlays |
-| 6. XAI Metrics and Statistical Analysis | Loads paired comparison, mask-ablation, pass-rate, and optional descriptive audit tables | `artifacts/reports/tables/` |
+| 5. XAI Methodology and Attribution-Mask Correction | Runs the paired Grad-CAM / SHAP audit and applies mask-aware attribution correction | XAI CSVs and overlays |
+| 6. XAI Metrics, Head-to-Head Comparison, and Per-Class Analysis | Loads paired comparison, mask-ablation, pass-rate, and optional descriptive audit tables | `artifacts/reports/tables/` |
 | 7. Report Tables and Figures Traceability | Renders and records the report visual review grids | demo PNGs |
 | 8. Qualitative Case Study | Builds one detailed case report on the test split | `artifacts/reports/figures/single/` |
 | 9. Audit Checklist | Lists the source parsing, import, notebook JSON, and CSV sanity checks used before audit | verification commands |
 
-### Section 2 control flags
+### Section 1 control flags
 
 These notebook flags are the main user-facing controls:
 
@@ -205,6 +209,13 @@ xai-diabetic-retinopathy/
 │   ├── xai_audit.py
 │   ├── xai_single.py
 │   └── report/
+│       ├── XAI_Final-ProjectReport.tex
+│       ├── references.bib
+│       └── assets/
+├── docs/
+│   ├── app.py
+│   ├── index.html
+│   └── static/
 ├── dataset/
 ├── artifacts/
 └── requirements.txt
@@ -242,10 +253,11 @@ Most important evaluation and XAI tables from the committed run:
 - `rq_xai_pass_by_class_seed1988_test.csv`
 - `rq_xai_pass_by_correctness_seed1988_test.csv`
 - `rq_xai_mask_ablation_seed1988_test.csv`
+- `rq_xai_per_class_seed1988_test.csv`
 - `rq1_gradcam_seed1988_test.csv`
 - `rq2_shap_seed1988_test.csv`
 - `xai_targets_seed1988_test.csv`
-- `gradcam_layer_selection_seed1988_test.csv`
+- `gradcam_layer_selection_seed1988_test.csv` *(static evidence — empirical layer-selection scores from the multi-layer audit that motivated `xai.gradcam_layer: layer2`; not regenerated on each run)*
 
 Committed headline numbers:
 

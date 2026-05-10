@@ -26,7 +26,6 @@ from src.data import (
     _model_image_size,
 )
 from src.train import (
-    _LogitWrapper,
     _load_model,
     _resolve_checkpoint_and_run_id,
 )
@@ -36,6 +35,20 @@ from src.xai_common import (
     _temperature_for_run,
 )
 from src.xai_viz import _normalize_map, _plot_attribution_grid
+
+
+class _LogitWrapper(nn.Module):
+    """Clone logits before returning so attribution libraries' backward hooks see a stable tensor."""
+
+    def __init__(self, model: nn.Module) -> None:
+        super().__init__()
+        self.model = model
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        logits = self.model(x)
+        if isinstance(logits, torch.Tensor):
+            return logits.clone()
+        return logits
 
 
 def _is_shap_inplace_view_error(exc: Exception) -> bool:
@@ -104,9 +117,7 @@ def _build_shap_explainer_with_known_warning_filter(
     wrapper: nn.Module,
     background: torch.Tensor,
 ) -> Any:
-    # SHAP DeepExplainer logs "unrecognized nn.Module" for several harmless
-    # modules in torchvision EfficientNet (e.g., SiLU, StochasticDepth).
-    # Filter only these known warnings to keep notebook logs clean.
+    # Suppress known benign SHAP warnings from EfficientNet modules.
     with warnings.catch_warnings():
         warnings.filterwarnings(
             "ignore",

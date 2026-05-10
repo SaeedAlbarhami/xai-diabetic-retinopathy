@@ -4,5 +4,6 @@
   "backbone": "efficientnet_b4",
   "split_policy": "aptos2019_85-15-v10",
   "checkpoint_path": "/Users/sthabit/My Drive/ITPG708Project/artifacts/checkpoints/dr_efficientnet_b4_aptos2019_85-15-v10_seed1988_20260509T0046_1037dc.pt",
-  "updated_at": "2026-05-09T02:29:19"
+  "updated_at": "2026-05-10T12:36:37",
+  "profile_tag": "aptos2019_85-15-v10"
 }

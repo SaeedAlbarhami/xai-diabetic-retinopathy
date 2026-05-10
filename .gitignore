@@ -25,6 +25,7 @@ Icon\r
 .idea/
 *.swp
 *~
+.claude/
 
 # Jupyter
 .ipynb_checkpoints/
@@ -68,3 +69,4 @@ dataset/**/*.tiff
 
 # Build outputs
 assets.zip
+*.executed.ipynb

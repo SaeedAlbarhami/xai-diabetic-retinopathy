@@ -4,7 +4,6 @@ from __future__ import annotations
 import json
 import os
 import random
-import shutil
 from pathlib import Path
 from typing import Any
 
@@ -122,17 +121,6 @@ def _load_json(path: str | Path) -> dict[str, Any]:
         return json.load(fh)
 
 
-def _write_alias_copy(src: str | Path, dst: str | Path) -> None:
-    src_path = Path(src)
-    dst_path = Path(dst)
-    if not src_path.exists():
-        return
-    dst_path.parent.mkdir(parents=True, exist_ok=True)
-    if src_path.resolve() == dst_path.resolve():
-        return
-    shutil.copy2(src_path, dst_path)
-
-
 def _set_seed(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
@@ -190,7 +178,6 @@ def _parse_aptos_csv(
     image_dir: str | Path,
     label_order: list[str],
     source_name: str,
-    source_dataset: str = "aptos2019",
 ) -> pd.DataFrame:
     csv_file = Path(csv_path)
     image_root = Path(image_dir)
@@ -226,7 +213,6 @@ def _parse_aptos_csv(
                 "class_id": int(class_id),
                 "class_name": class_name,
                 "laterality": _infer_laterality(filename),
-                "source_dataset": str(source_dataset),
             }
         )
 
@@ -251,21 +237,18 @@ def _load_aptos_full_pool(conf: dict[str, Any], label_order: list[str]) -> pd.Da
         image_dir=conf["paths"]["aptos_train_image_dir"],
         label_order=label_order,
         source_name="source_aptos_train",
-        source_dataset="aptos2019",
     )
     aptos_valid = _parse_aptos_csv(
         csv_path=conf["paths"]["aptos_valid_csv"],
         image_dir=conf["paths"]["aptos_valid_image_dir"],
         label_order=label_order,
         source_name="source_aptos_valid",
-        source_dataset="aptos2019",
     )
     aptos_test = _parse_aptos_csv(
         csv_path=conf["paths"]["aptos_test_csv"],
         image_dir=conf["paths"]["aptos_test_image_dir"],
         label_order=label_order,
         source_name="source_aptos_test",
-        source_dataset="aptos2019",
     )
     aptos_full = pd.concat([aptos_train, aptos_valid, aptos_test], ignore_index=True)
     if aptos_full["patient_id"].astype(str).duplicated().any():
@@ -274,48 +257,23 @@ def _load_aptos_full_pool(conf: dict[str, Any], label_order: list[str]) -> pd.Da
     return aptos_full
 
 
-def _data_source(conf: dict[str, Any]) -> str:
-    return str(conf.get("data", {}).get("source", "aptos_only")).strip().lower()
-
-
 def _load_dataset_pool(conf: dict[str, Any], label_order: list[str]) -> pd.DataFrame:
-    source = _data_source(conf)
-    if source in {"aptos_only", "aptos", "aptos2019"}:
-        return _load_aptos_full_pool(conf, label_order=label_order)
-    raise ValueError(f"Unsupported data.source={source}. Only aptos_only is supported.")
+    return _load_aptos_full_pool(conf, label_order=label_order)
 
 
-def _slug_token(raw: Any, fallback: str = "value") -> str:
-    token = "".join(ch.lower() if str(ch).isalnum() else "_" for ch in str(raw))
-    token = "_".join([part for part in token.split("_") if part])
-    return token or fallback
-
-
-def _profile_dataset_tag(conf: dict[str, Any]) -> str:
-    source_raw = _data_source(conf)
-    if source_raw in {"aptos_only", "aptos", "aptos2019"} or "aptos" in source_raw:
-        return "aptos2019"
-    return _slug_token(source_raw, fallback="dataset")
-
-
-def _profile_split_tag(conf: dict[str, Any]) -> str:
+def _profile_tag(conf: dict[str, Any]) -> str:
     data_cfg = conf.get("data", {})
-    test_ratio = _to_ratio_fraction(data_cfg.get("profile_test_ratio", data_cfg.get("test_ratio", 0.15)), "profile_test_ratio")
-    train_ratio = max(0.0, 1.0 - test_ratio)
-    val_ratio = _to_ratio_fraction(
-        data_cfg.get("profile_val_ratio_within_train", data_cfg.get("val_ratio", 0.10)),
-        "profile_val_ratio_within_train",
-    )
-    return f"{int(round(train_ratio * 100))}-{int(round(test_ratio * 100))}-v{int(round(val_ratio * 100))}"
-
-
-def _profile_profile_tag(conf: dict[str, Any]) -> str:
-    return f"{_profile_dataset_tag(conf)}_{_profile_split_tag(conf)}"
+    test_ratio = _to_ratio_fraction(data_cfg.get("profile_test_ratio", 0.15), "profile_test_ratio")
+    val_ratio = _to_ratio_fraction(data_cfg.get("profile_val_ratio_within_train", 0.10), "profile_val_ratio_within_train")
+    train_pct = int(round((1.0 - test_ratio) * 100))
+    test_pct = int(round(test_ratio * 100))
+    val_pct = int(round(val_ratio * 100))
+    return f"aptos2019_{train_pct}-{test_pct}-v{val_pct}"
 
 
 def _manifest_suffix(conf: dict[str, Any], seed: int | None = None) -> str:
     use_seed = int(seed if seed is not None else conf.get("data", {}).get("stratify_seed", 1988))
-    return f"_{_profile_profile_tag(conf)}_seed{use_seed}"
+    return f"_{_profile_tag(conf)}_seed{use_seed}"
 
 
 def _manifest_filename_map(conf: dict[str, Any], seed: int | None = None) -> dict[str, str]:
@@ -427,7 +385,6 @@ def prepare_data_manifests(cfg: str | Path | dict[str, Any], seed: int = 1988) -
         "train_val_disjoint": bool(set(train_split["patient_id"].astype(str)).isdisjoint(set(val_split["patient_id"].astype(str)))),
         "train_test_disjoint": bool(set(train_split["patient_id"].astype(str)).isdisjoint(set(test_split["patient_id"].astype(str)))),
         "val_test_disjoint": bool(set(val_split["patient_id"].astype(str)).isdisjoint(set(test_split["patient_id"].astype(str)))),
-        "source_counts": {str(k): int(v) for k, v in all_full["source_dataset"].astype(str).value_counts().to_dict().items()},
         "class_counts_train": {str(k): int(v) for k, v in train_split["class_id"].astype(int).value_counts().sort_index().to_dict().items()},
         "class_counts_val": {str(k): int(v) for k, v in val_split["class_id"].astype(int).value_counts().sort_index().to_dict().items()},
         "class_counts_test": {str(k): int(v) for k, v in test_split["class_id"].astype(int).value_counts().sort_index().to_dict().items()},
@@ -446,7 +403,6 @@ def _build_transform(
     train: bool,
     aug_cfg: dict[str, float],
     preprocessing_cfg: dict[str, Any] | None = None,
-    skip_resize: bool = False,
 ) -> T.Compose:
     prep = preprocessing_cfg or {}
     ops: list[Any] = []
@@ -472,13 +428,9 @@ def _build_transform(
             T.ColorJitter(
                 brightness=float(aug_cfg.get("profile_brightness", 0.15)),
                 contrast=float(aug_cfg.get("profile_contrast", 0.15)),
-                saturation=float(aug_cfg.get("profile_saturation", 0.0)),
-                hue=float(aug_cfg.get("profile_hue", 0.0)),
             )
         )
 
-    if not skip_resize:
-        ops.append(T.Resize((image_size, image_size)))
     norm_mean = prep.get("norm_mean", [0.485, 0.456, 0.406])
     norm_std = prep.get("norm_std", [0.229, 0.224, 0.225])
     if not (isinstance(norm_mean, list) and len(norm_mean) == 3 and isinstance(norm_std, list) and len(norm_std) == 3):
@@ -495,9 +447,6 @@ def _build_transform(
 
 def _apply_fundus_preprocessing(image: Image.Image, image_size: int, preprocessing_cfg: dict[str, Any] | None = None) -> Image.Image:
     cfg = preprocessing_cfg or {}
-    if not bool(cfg.get("enabled", True)):
-        return image
-
     arr = np.array(image.convert("RGB"), dtype=np.uint8)
     arr = cv2.resize(arr, (image_size, image_size), interpolation=cv2.INTER_AREA)
 
@@ -542,13 +491,11 @@ class _FundusDataset(Dataset):
         self.df = pd.read_csv(manifest_path)
         self.image_size = int(image_size)
         self.preprocessing_cfg = preprocessing_cfg or {}
-        self.preprocessing_enabled = bool(self.preprocessing_cfg.get("enabled", True))
         self.transform = _build_transform(
             image_size=image_size,
             train=train,
             aug_cfg=aug_cfg,
             preprocessing_cfg=self.preprocessing_cfg,
-            skip_resize=self.preprocessing_enabled,
         )
 
     def __len__(self) -> int:
@@ -574,7 +521,6 @@ def _load_image_for_inference(
     preprocessing_cfg: dict[str, Any] | None = None,
 ) -> tuple[Image.Image, torch.Tensor]:
     cfg = preprocessing_cfg or {}
-    preprocessing_enabled = bool(cfg.get("enabled", True))
     image = Image.open(image_path).convert("RGB")
     image = _apply_fundus_preprocessing(image, image_size=image_size, preprocessing_cfg=cfg)
     transform = _build_transform(
@@ -582,7 +528,6 @@ def _load_image_for_inference(
         train=False,
         aug_cfg={},
         preprocessing_cfg=cfg,
-        skip_resize=preprocessing_enabled,
     )
     tensor = transform(image).unsqueeze(0)
     return image, tensor
@@ -601,30 +546,11 @@ def _manifest_path(conf: dict[str, Any], split: str, seed: int | None = None) ->
 
 
 def _backbone_name(conf: dict[str, Any]) -> str:
-    raw = str(conf.get("training", {}).get("backbone", "resnet50")).strip().lower()
-    aliases = {
-        "resnet50": "resnet50",
-        "resnet-50": "resnet50",
-        "efficientnet_b4": "efficientnet_b4",
-        "efficientnet-b4": "efficientnet_b4",
-        "efficientnetb4": "efficientnet_b4",
-        "vit_b16": "vit_b16",
-        "vit_b_16": "vit_b16",
-        "vit-base": "vit_b16",
-        "vit_base": "vit_b16",
-        "vitb16": "vit_b16",
-    }
-    if raw in aliases:
-        return aliases[raw]
-    raise ValueError(f"Unsupported backbone: {raw}. Supported: resnet50, efficientnet_b4, vit_b16")
+    return "efficientnet_b4"
 
 
 def _model_image_size(conf: dict[str, Any]) -> int:
-    requested = int(conf["data"]["image_size"])
-    backbone = _backbone_name(conf)
-    if backbone == "vit_b16":
-        return 224
-    return requested
+    return int(conf["data"]["image_size"])
 
 
 def _to_ratio_fraction(value: Any, key: str) -> float:
@@ -636,10 +562,6 @@ def _to_ratio_fraction(value: Any, key: str) -> float:
     return ratio
 
 
-def _split_policy_tag(conf: dict[str, Any]) -> str:
-    return _profile_profile_tag(conf)
-
-
 def _table_path(conf: dict[str, Any], stem: str, seed: int | None = None, split: str | None = None, ext: str = "csv") -> Path:
     base = Path(conf["paths"]["tables_dir"])
     parts = [str(stem)]
@@ -647,7 +569,7 @@ def _table_path(conf: dict[str, Any], stem: str, seed: int | None = None, split:
         parts.append(f"seed{int(seed)}")
     if split:
         parts.append(str(split))
-    parts.append(_profile_profile_tag(conf))
+    parts.append(_profile_tag(conf))
     return base / f"{'_'.join(parts)}.{ext}"
 
 
@@ -720,24 +642,6 @@ def notebook_prepare_data_overview(
         lambda x: f"{float(x):.2f}%" if np.isfinite(x) else "N/A"
     )
 
-    source_summary = pd.DataFrame()
-    if "source_dataset" in all_df.columns:
-        source_summary = (
-            all_df.groupby(["view", "source_dataset"])
-            .size()
-            .reset_index(name="rows")
-        )
-        source_summary["view_total"] = source_summary.groupby("view")["rows"].transform("sum")
-        source_summary["view_pct"] = np.where(
-            source_summary["view_total"] > 0,
-            (source_summary["rows"] / source_summary["view_total"]) * 100.0,
-            np.nan,
-        )
-        source_summary["view_pct"] = source_summary["view_pct"].map(
-            lambda x: f"{float(x):.2f}%" if np.isfinite(x) else "N/A"
-        )
-        source_summary = source_summary.sort_values(["view", "source_dataset"]).reset_index(drop=True)
-
     pivot_counts = (
         counts.pivot(index="class_name", columns="view", values="count")
         .fillna(0)
@@ -808,7 +712,6 @@ def notebook_prepare_data_overview(
         "split_summary": split_summary,
         "class_distribution": counts,
         "overall_class_proportions": overall.sort_values("class_id").reset_index(drop=True),
-        "source_dataset_mix": source_summary,
         "class_count_fig": fig_counts,
         "class_proportion_fig": fig_prop,
         "sample_images_fig": fig_samples,

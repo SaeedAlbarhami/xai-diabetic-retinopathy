@@ -14,9 +14,6 @@
   "train_val_disjoint": true,
   "train_test_disjoint": true,
   "val_test_disjoint": true,
-  "source_counts": {
-    "aptos2019": 3662
-  },
   "class_counts_train": {
     "0": 1380,
     "1": 282,

@@ -12,7 +12,6 @@ import pandas as pd
 import torch
 
 from src.data import (
-    _backbone_name,
     _cfg,
     _load_image_for_inference,
     _load_json,
@@ -75,7 +74,6 @@ def explain_single_image_detailed(
 
     device = _resolve_xai_device(conf)
     image_size = _model_image_size(conf)
-    backbone = _backbone_name(conf)
     fig_dpi = int(conf.get("xai", {}).get("figure_dpi", 180))
     pass_border_ratio_max, pass_faith_delta_min = _xai_pass_rule_thresholds(conf)
     ckpt_path, run_id = _resolve_checkpoint_and_run_id(conf, seed=seed, checkpoint=None, require_existing=True)
@@ -133,7 +131,6 @@ def explain_single_image_detailed(
                 device=device,
                 conf=conf,
                 overlay_dpi=fig_dpi,
-                backbone_hint=backbone,
             )
             if not default_gradcam_artifact:
                 default_gradcam_artifact = artifact
@@ -348,7 +345,7 @@ def run_single_case_demo(
     if sampled_row is not None:
         true_class = int(sampled_row["class_id"])
     else:
-        # Best-effort lookup of true class from manifest for correctness border/captions.
+        # Look up true class from manifest when available, for correctness display.
         target = str(img_path)
         for _, row in manifest_df.iterrows():
             row_path = Path(str(row["image_path"]))
@@ -463,8 +460,6 @@ def notebook_run_single_case_report(
     split: str = "test",
     safe_mode: bool = False,
 ) -> dict[str, Any]:
-    from src.xai_audit import _parse_gradcam_layers
-
     conf = copy.deepcopy(_cfg(cfg_or_path))
     xai_cfg = conf.setdefault("xai", {})
 
@@ -474,19 +469,12 @@ def notebook_run_single_case_report(
     else:
         xai_cfg.setdefault("device", conf.get("training", {}).get("device", "mps"))
 
-    default_gradcam_layer = str(xai_cfg.get("gradcam_layer", "layer4"))
-    requested_gradcam_layers = _parse_gradcam_layers(
-        raw_layers=xai_cfg.get("gradcam_layers_eval", ["layer2", "layer3", default_gradcam_layer]),
-        default_layer=default_gradcam_layer,
-    )
-
     demo_image_path = str(image_path).strip()
     single_demo = run_single_case_demo(
         cfg_path=conf,
         seed=int(seed),
         image_path=demo_image_path,
         split=str(split).strip().lower() or "test",
-        gradcam_layers=requested_gradcam_layers,
         shap_background_size=int(xai_cfg.get("shap_background_size", 64)),
         shap_panel_size=(3.2, 3.6),
         shap_dpi=min(600, max(240, int(xai_cfg.get("figure_dpi", 180)))),
@@ -551,9 +539,10 @@ def notebook_run_single_case_report(
     single_result = single_demo.get("single_result", {}) or {}
     gradcam_details_list = single_result.get("gradcam_details", []) or []
     shap_details = single_result.get("shap_details", {}) or {}
+    primary_gradcam_layer = str(xai_cfg.get("gradcam_layer", "layer4"))
     gcam_row = None
     for entry in gradcam_details_list:
-        if str(entry.get("layer", "")) == default_gradcam_layer:
+        if str(entry.get("layer", "")) == primary_gradcam_layer:
             gcam_row = entry
             break
     if gcam_row is None and gradcam_details_list:

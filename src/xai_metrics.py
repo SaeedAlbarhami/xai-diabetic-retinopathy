@@ -124,6 +124,8 @@ def _faithfulness_delta(model: nn.Module, image_tensor: torch.Tensor, score_map:
 
 
 def _parse_faithfulness_k_list(raw_value: Any) -> list[float]:
+    """Parse k_list from config; ensure 0.20 is included (the operational
+    pass rule and the `faith_delta_k20` headline column both depend on it)."""
     default_k = [0.05, 0.10, 0.20, 0.30]
     values: list[float] = []
     if isinstance(raw_value, (list, tuple)):
@@ -136,7 +138,7 @@ def _parse_faithfulness_k_list(raw_value: Any) -> list[float]:
                 values.append(k)
     if not values:
         values = default_k
-    values = sorted({round(v, 4) for v in values})
+    values = sorted({round(v, 4) for v in values} | {0.20})
     return values
 
 

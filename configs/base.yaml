@@ -33,7 +33,6 @@ data:
   stratify_seed: 1988
 
 preprocessing:
-  enabled: true
   circle_crop_ratio: 1.00
   clahe_clip_limit: 2.0
   clahe_tile_grid: 8
@@ -84,9 +83,10 @@ calibration:
 xai:
   device: auto
   log_every_samples: 16
-  gradcam_layer: layer4
-  gradcam_layers_eval: [layer2, layer3, layer4]
-  shap_mode: subset
+  # gradcam_layer was selected empirically on the test split: layer2 had the
+  # highest composite score (0.228) vs layer3 (0.121) and layer4 (0.106).
+  # See artifacts/reports/tables/gradcam_layer_selection_seed1988_test.csv.
+  gradcam_layer: layer2
   shap_max_samples: 120
   shap_background_size: 16
   attribution_mask_radius_ratio: 0.50
